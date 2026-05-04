@@ -1,11 +1,18 @@
 """QProcess обёртка для запуска N_m3u8DL-RE."""
 
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QObject, QProcess, pyqtSignal
+
+# Регулярка для удаления ANSI escape-последовательностей
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+# Паттерн строки прогресса N_m3u8DL-RE: содержит "N/M XX.XX%"
+_PROGRESS_RE = re.compile(r"\d+/\d+\s+\d+(?:\.\d+)?%")
 
 # Утилиты, необходимые для работы
 REQUIRED_TOOLS = ["N_m3u8DL-RE", "ffmpeg", "mp4decrypt"]
@@ -109,7 +116,9 @@ class Downloader(QObject):
         except Exception:
             text = str(data)
 
-        # Собираем буфер, чтобы не разрывать строки
+        # Убираем ANSI escape-коды
+        text = _ANSI_RE.sub("", text)
+
         self._buffer += text
 
         while self._buffer:
@@ -118,7 +127,6 @@ class Downloader(QObject):
             cr = self._buffer.find("\r")
 
             if nl == -1 and cr == -1:
-                # Нет разделителей — ждём ещё данных
                 break
 
             # Берём ближайший разделитель
@@ -135,11 +143,12 @@ class Downloader(QObject):
             if not line.strip():
                 continue
 
-            if sep == "\r":
-                # Строка прогресса — обновляет прогресс-бар и последнюю строку
+            # Определяем прогресс-строку по содержимому ИЛИ по \r-разделителю
+            is_progress = sep == "\r" or bool(_PROGRESS_RE.search(line))
+
+            if is_progress:
                 self.progress_received.emit(line)
             else:
-                # Обычная строка — в лог
                 self.log_received.emit(line + "\n")
 
     def _on_finished(self, exit_code, _exit_status):

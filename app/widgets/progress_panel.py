@@ -27,9 +27,10 @@ class ProgressPanel(QWidget):
         layout.addWidget(self._info_label)
 
         # Регулярки для N_m3u8DL-RE
-        # Формат: "Vid 1080 | Aud 1 | 45.12% | 12.3 MiB/s | 00:01:23"
-        # или:    "45.12% | 12.3 MiB/s | 00:01:23"
+        # Формат: "Vid 1080 | ... 50/100 45.12% 12.3 MiB/s 00:01:23"
         self._pct_re = re.compile(r"(\d+(?:\.\d+)?)%")
+        # Формат N/M (e.g. "50/100") — вычисляем процент из дроби
+        self._fraction_re = re.compile(r"(\d+)/(\d+)")
         self._speed_re = re.compile(
             r"(\d+(?:\.\d+)?\s*(?:Ki?B|Mi?B|Gi?B|[KMG]?B|B)(?:ps|/s))", re.IGNORECASE
         )
@@ -56,6 +57,10 @@ class ProgressPanel(QWidget):
         if pct_match:
             pct = float(pct_match.group(1))
             self._progress_bar.setValue(int(pct))
+        elif (frac := self._fraction_re.search(text)):
+            done, total = int(frac.group(1)), int(frac.group(2))
+            if total > 0:
+                self._progress_bar.setValue(int(done * 100 / total))
 
         info_parts = []
         speed_match = self._speed_re.search(text)
