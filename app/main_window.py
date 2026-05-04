@@ -1,0 +1,513 @@
+"""Главное окно приложения с вкладками Новая задача и История."""
+
+import os
+import shutil
+import tempfile
+from dataclasses import dataclass
+
+from PyQt6.QtWidgets import (
+    QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QMessageBox, QSpinBox,
+)
+from PyQt6.QtCore import QSize
+
+from app.core.command_parser import parse_command, ParsedCommand
+from app.core.normalizer import normalize_filename
+from app.core.config import ConfigManager
+from app.core.task_manager import TaskManager, Task
+from app.core.downloader import Downloader, find_executable, check_all_tools, format_tool_check_log
+from app.core.s3_uploader import S3Uploader
+from app.widgets.command_input import CommandInput
+from app.widgets.file_name_edit import FileNameEdit
+from app.widgets.destination_panel import DestinationPanel
+from app.widgets.log_panel import LogPanel
+from app.widgets.progress_panel import ProgressPanel
+from app.widgets.task_list import TaskList
+from app.dialogs.s3_config_dialog import S3ConfigDialog
+from app.dialogs.help_dialog import HelpDialog
+
+
+@dataclass
+class QueueItem:
+    """Элемент очереди загрузки."""
+    raw_command: str
+    parsed: ParsedCommand
+    name: str
+    save_dir: str
+    dest_type: str          # "local" / "s3"
+    dest_path: str
+    delete_local: bool
+    task_id: int | None = None
+    retries_left: int = 0
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Помощник загрузки")
+        self.setMinimumSize(QSize(700, 600))
+
+        self._config = ConfigManager()
+        self._task_mgr = TaskManager()
+        self._downloader = Downloader(self)
+        self._uploader: S3Uploader | None = None
+        self._current_item: QueueItem | None = None
+        self._queue: list[QueueItem] = []
+        self._parsed: ParsedCommand | None = None
+
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(6, 6, 6, 6)
+
+        # Верхняя строка с кнопкой справки
+        top_row = QHBoxLayout()
+        top_row.addStretch()
+        help_btn = QPushButton("?")
+        help_btn.setFixedSize(28, 28)
+        help_btn.setToolTip("Справка")
+        help_btn.setStyleSheet(
+            "QPushButton { font-weight: bold; font-size: 14px; border-radius: 14px; }"
+        )
+        help_btn.clicked.connect(self._on_help)
+        top_row.addWidget(help_btn)
+        central_layout.addLayout(top_row)
+
+        self._tabs = QTabWidget()
+        central_layout.addWidget(self._tabs, 1)
+        self.setCentralWidget(central)
+
+        self._build_new_task_tab()
+        self._build_history_tab()
+
+        self._downloader.output_received.connect(self._on_download_output)
+        self._downloader.finished.connect(self._on_download_finished)
+
+    # ── Вкладка "Новая задача" ───────────────────────────────────
+
+    def _build_new_task_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self._cmd_input = CommandInput()
+        self._cmd_input.parse_btn.clicked.connect(self._on_parse)
+        layout.addWidget(self._cmd_input)
+
+        self._file_name = FileNameEdit()
+        self._file_name.normalize_btn.clicked.connect(self._on_normalize)
+        layout.addWidget(self._file_name)
+
+        layout.addWidget(QLabel("Сохранить в:"))
+        self._dest_panel = DestinationPanel(self._config.get("save_path"))
+        self._dest_panel.s3_settings_btn.clicked.connect(self._on_s3_settings)
+        self._dest_panel.set_s3_path(self._config.get("s3_default_path"))
+        layout.addWidget(self._dest_panel)
+
+        # Строка: повторы + кнопки
+        ctrl_row = QHBoxLayout()
+        ctrl_row.addWidget(QLabel("Повторы при ошибке:"))
+        self._retry_spin = QSpinBox()
+        self._retry_spin.setRange(0, 10)
+        self._retry_spin.setValue(2)
+        self._retry_spin.setToolTip("Количество повторных попыток при ошибке загрузки")
+        ctrl_row.addWidget(self._retry_spin)
+
+        ctrl_row.addSpacing(20)
+
+        self._add_queue_btn = QPushButton("Добавить в очередь")
+        self._download_btn = QPushButton("Скачать")
+        self._stop_btn = QPushButton("Остановить")
+        self._stop_btn.setEnabled(False)
+        ctrl_row.addWidget(self._add_queue_btn)
+        ctrl_row.addWidget(self._download_btn)
+        ctrl_row.addWidget(self._stop_btn)
+        ctrl_row.addStretch()
+        layout.addLayout(ctrl_row)
+
+        # Метка очереди
+        self._queue_label = QLabel("")
+        self._queue_label.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(self._queue_label)
+
+        self._add_queue_btn.clicked.connect(self._on_add_to_queue)
+        self._download_btn.clicked.connect(self._on_download)
+        self._stop_btn.clicked.connect(self._on_stop)
+
+        # Прогресс-бар
+        self._progress = ProgressPanel()
+        layout.addWidget(self._progress)
+
+        layout.addWidget(QLabel("Логи:"))
+        self._log_panel = LogPanel()
+        layout.addWidget(self._log_panel, 1)
+
+        self._tabs.addTab(tab, "Новая задача")
+
+    # ── Вкладка "История" ────────────────────────────────────────
+
+    def _build_history_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self._task_list = TaskList()
+        layout.addWidget(self._task_list, 1)
+
+        layout.addWidget(QLabel("Логи задачи:"))
+        self._history_log = LogPanel()
+        layout.addWidget(self._history_log, 1)
+
+        self._task_list.view_logs_requested.connect(self._on_view_task_logs)
+        self._task_list.redownload_requested.connect(self._on_redownload)
+        self._task_list.delete_requested.connect(self._on_delete_task)
+
+        self._tabs.addTab(tab, "История")
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+
+    # ── Общие слоты ──────────────────────────────────────────────
+
+    def _on_parse(self):
+        raw = self._cmd_input.get_text()
+        if not raw:
+            return
+        self._parsed = parse_command(raw)
+        if self._parsed.save_name:
+            self._file_name.set_name(self._parsed.save_name)
+        if self._parsed.url:
+            self._log_panel.append_text(f"URL: {self._parsed.url}\n")
+        if self._parsed.save_name:
+            self._log_panel.append_text(f"Имя: {self._parsed.save_name}\n")
+
+    def _on_normalize(self):
+        name = self._file_name.get_name()
+        if name:
+            self._file_name.set_name(normalize_filename(name))
+
+    def _on_s3_settings(self):
+        dlg = S3ConfigDialog(self._config, self)
+        dlg.exec()
+
+    def _on_help(self):
+        dlg = HelpDialog(self)
+        dlg.exec()
+
+    # ── Создание элемента очереди ────────────────────────────────
+
+    def _make_queue_item(self) -> QueueItem | None:
+        """Собирает QueueItem из текущего состояния формы. Возвращает None при ошибке."""
+        raw_cmd = self._cmd_input.get_text()
+        if not raw_cmd:
+            QMessageBox.warning(self, "Ошибка", "Вставьте команду.")
+            return None
+
+        if not self._parsed:
+            self._parsed = parse_command(raw_cmd)
+
+        name = self._file_name.get_name() or self._parsed.save_name or "output"
+        is_local = self._dest_panel.is_local()
+
+        if is_local:
+            save_dir = self._dest_panel.get_local_path()
+            if not save_dir:
+                QMessageBox.warning(self, "Ошибка", "Выберите локальную папку.")
+                return None
+        else:
+            save_dir = tempfile.mkdtemp(prefix="dlhelper_")
+
+        dest_type = "local" if is_local else "s3"
+        dest_path = save_dir if is_local else self._dest_panel.get_s3_path()
+        delete_local = (not is_local) and self._dest_panel.should_delete_local()
+
+        return QueueItem(
+            raw_command=raw_cmd,
+            parsed=self._parsed,
+            name=name,
+            save_dir=save_dir,
+            dest_type=dest_type,
+            dest_path=dest_path,
+            delete_local=delete_local,
+            retries_left=self._retry_spin.value(),
+        )
+
+    # ── Очередь задач ────────────────────────────────────────────
+
+    def _update_queue_label(self):
+        n = len(self._queue)
+        if n > 0:
+            self._queue_label.setText(f"В очереди: {n}")
+        else:
+            self._queue_label.setText("")
+
+    def _on_add_to_queue(self):
+        item = self._make_queue_item()
+        if not item:
+            return
+        self._queue.append(item)
+        self._update_queue_label()
+        self._log_panel.append_text(f"Добавлено в очередь: {item.name}\n")
+
+    def _on_download(self):
+        if self._downloader.is_running():
+            QMessageBox.warning(self, "Занято", "Загрузка уже выполняется.")
+            return
+
+        # Если очередь пуста — добавляем текущую форму как единственный элемент
+        if not self._queue:
+            item = self._make_queue_item()
+            if not item:
+                return
+            self._queue.append(item)
+            self._update_queue_label()
+
+        self._process_next_in_queue()
+
+    def _process_next_in_queue(self):
+        if not self._queue:
+            self._update_queue_label()
+            self._log_panel.append_text("\n--- Очередь завершена ---\n")
+            return
+
+        item = self._queue.pop(0)
+        self._update_queue_label()
+
+        # Проверка утилит
+        statuses = check_all_tools()
+        self._log_panel.append_text(format_tool_check_log(statuses))
+        missing = [s.name for s in statuses if not s.found]
+        if missing:
+            self._log_panel.append_text(
+                f"Загрузка невозможна. Отсутствуют: {', '.join(missing)}\n"
+            )
+            self._download_btn.setEnabled(True)
+            self._add_queue_btn.setEnabled(True)
+            return
+
+        # Проверка свободного места
+        if not self._check_disk_space(item.save_dir):
+            self._log_panel.append_text(
+                f"Недостаточно места на диске для {item.name}. Пропуск.\n"
+            )
+            self._process_next_in_queue()
+            return
+
+        exe = next(s.path for s in statuses if s.name == "N_m3u8DL-RE")
+
+        args = item.parsed.rebuild_command({
+            "save_name": item.name,
+            "save_dir": item.save_dir,
+        })
+        args[0] = exe
+
+        # Создаём запись задачи
+        task = Task(
+            name=item.name,
+            command=item.raw_command,
+            status="Downloading",
+            destination_type=item.dest_type,
+            destination_path=item.dest_path,
+        )
+        task = self._task_mgr.create_task(task)
+        item.task_id = task.id
+        self._current_item = item
+
+        if item.dest_type == "local":
+            self._config.set("save_path", item.save_dir)
+            self._config.save()
+        else:
+            self._config.set("s3_default_path", item.dest_path)
+            self._config.save()
+
+        self._log_panel.clear()
+        self._progress.reset()
+        self._progress.set_status("Загрузка...")
+        self._log_panel.append_text(f"Запуск: {' '.join(args)}\n\n")
+        self._download_btn.setEnabled(False)
+        self._add_queue_btn.setEnabled(False)
+        self._stop_btn.setEnabled(True)
+        self._downloader.start(args)
+
+    def _on_stop(self):
+        self._downloader.stop()
+        if self._current_item and self._current_item.task_id:
+            self._task_mgr.update_status(self._current_item.task_id, "Failed")
+        self._current_item = None
+        self._queue.clear()
+        self._update_queue_label()
+        self._download_btn.setEnabled(True)
+        self._add_queue_btn.setEnabled(True)
+        self._stop_btn.setEnabled(False)
+        self._progress.set_status("Остановлено")
+        self._log_panel.append_text("\n--- Остановлено ---\n")
+
+    def _on_download_output(self, text: str):
+        self._log_panel.append_text(text)
+        self._progress.parse_output(text)
+        if self._current_item and self._current_item.task_id:
+            self._task_mgr.append_log(self._current_item.task_id, text)
+
+    def _on_download_finished(self, exit_code: int):
+        self._stop_btn.setEnabled(False)
+
+        item = self._current_item
+        if not item:
+            self._download_btn.setEnabled(True)
+            self._add_queue_btn.setEnabled(True)
+            return
+
+        if exit_code != 0:
+            # Попытка повторить
+            if item.retries_left > 0:
+                item.retries_left -= 1
+                self._log_panel.append_text(
+                    f"\n--- Ошибка (код {exit_code}). "
+                    f"Повтор ({item.retries_left} осталось)... ---\n"
+                )
+                if item.task_id:
+                    self._task_mgr.append_log(
+                        item.task_id,
+                        f"\n--- Повторная попытка (осталось {item.retries_left}) ---\n"
+                    )
+                # Возвращаем в начало очереди и запускаем снова
+                self._queue.insert(0, item)
+                self._current_item = None
+                self._process_next_in_queue()
+                return
+
+            self._log_panel.append_text(f"\n--- Ошибка (код {exit_code}) ---\n")
+            self._progress.set_finished(False)
+            if item.task_id:
+                self._task_mgr.update_status(item.task_id, "Failed")
+            self._current_item = None
+            self._download_btn.setEnabled(True)
+            self._add_queue_btn.setEnabled(True)
+            self._process_next_in_queue()
+            return
+
+        self._log_panel.append_text("\n--- Загрузка завершена ---\n")
+
+        if item.dest_type == "s3":
+            self._start_s3_upload(item)
+        else:
+            self._progress.set_finished(True)
+            if item.task_id:
+                self._task_mgr.update_status(item.task_id, "Done")
+            self._current_item = None
+            self._download_btn.setEnabled(True)
+            self._add_queue_btn.setEnabled(True)
+            self._process_next_in_queue()
+
+    # ── S3 загрузка ──────────────────────────────────────────────
+
+    def _start_s3_upload(self, item: QueueItem):
+        if item.task_id:
+            self._task_mgr.update_status(item.task_id, "Uploading")
+        self._progress.reset()
+        self._progress.set_status("Загрузка в S3...")
+        self._log_panel.append_text("\nНачинается загрузка в S3...\n")
+
+        local_file = self._find_downloaded_file(item.save_dir, item.name)
+        if not local_file:
+            self._log_panel.append_text("Ошибка: не удалось найти скачанный файл.\n")
+            self._progress.set_finished(False)
+            if item.task_id:
+                self._task_mgr.update_status(item.task_id, "Failed")
+            self._current_item = None
+            self._download_btn.setEnabled(True)
+            self._add_queue_btn.setEnabled(True)
+            self._process_next_in_queue()
+            return
+
+        s3_config = self._config.get_s3_config()
+        s3_path = item.dest_path or f"/{item.name}"
+        if s3_path.endswith("/"):
+            s3_path += os.path.basename(local_file)
+
+        self._uploader = S3Uploader(
+            local_file, s3_path, s3_config,
+            delete_local=item.delete_local,
+            parent=self,
+        )
+        self._uploader.progress.connect(self._progress.set_progress)
+        self._uploader.log_message.connect(self._on_upload_log)
+        self._uploader.upload_finished.connect(self._on_upload_finished)
+        self._uploader.start()
+
+    def _find_downloaded_file(self, directory: str, name_hint: str) -> str | None:
+        if not directory or not os.path.isdir(directory):
+            return None
+        files = []
+        for f in os.listdir(directory):
+            full = os.path.join(directory, f)
+            if os.path.isfile(full):
+                files.append(full)
+        if not files:
+            return None
+        for f in files:
+            if name_hint in os.path.basename(f):
+                return f
+        return max(files, key=os.path.getsize)
+
+    def _on_upload_log(self, text: str):
+        self._log_panel.append_text(text)
+        if self._current_item and self._current_item.task_id:
+            self._task_mgr.append_log(self._current_item.task_id, text)
+
+    def _on_upload_finished(self, success: bool, message: str):
+        item = self._current_item
+        if item and item.task_id:
+            self._task_mgr.update_status(item.task_id, "Done" if success else "Failed")
+        self._progress.set_finished(success)
+        self._current_item = None
+        self._uploader = None
+        self._download_btn.setEnabled(True)
+        self._add_queue_btn.setEnabled(True)
+        self._process_next_in_queue()
+
+    # ── Проверка свободного места ────────────────────────────────
+
+    @staticmethod
+    def _check_disk_space(path: str, min_mb: int = 500) -> bool:
+        """Проверяет, есть ли хотя бы min_mb МБ свободного места."""
+        try:
+            target = path
+            while not os.path.exists(target):
+                target = os.path.dirname(target)
+                if not target:
+                    return True
+            usage = shutil.disk_usage(target)
+            free_mb = usage.free / (1024 * 1024)
+            return free_mb >= min_mb
+        except OSError:
+            return True
+
+    # ── Слоты вкладки "История" ──────────────────────────────────
+
+    def _on_tab_changed(self, index: int):
+        if index == 1:
+            self._refresh_history()
+
+    def _refresh_history(self):
+        tasks = self._task_mgr.get_all_tasks()
+        self._task_list.load_tasks(tasks)
+
+    def _on_view_task_logs(self, task_id: int):
+        log = self._task_mgr.get_log(task_id)
+        self._history_log.clear()
+        self._history_log.appendPlainText(log)
+
+    def _on_redownload(self, task_id: int):
+        task = self._task_mgr.get_task(task_id)
+        if not task:
+            return
+        self._tabs.setCurrentIndex(0)
+        self._cmd_input.set_text(task.command)
+        self._file_name.set_name(task.name)
+        self._on_parse()
+
+    def _on_delete_task(self, task_id: int):
+        reply = QMessageBox.question(
+            self, "Удаление задачи", "Удалить эту задачу из истории?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._task_mgr.delete_task(task_id)
+            self._refresh_history()
+            self._history_log.clear()
