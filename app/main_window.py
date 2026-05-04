@@ -473,10 +473,15 @@ class MainWindow(QMainWindow):
             self._progress_timer.start()
 
     def _flush_progress(self):
-        """Показывает в логах строку самого приоритетного потока."""
+        """Показывает в логах строку активного (не завершённого) потока."""
         if not self._stream_lines:
             return
-        best = max(self._stream_lines, key=lambda s: self._stream_pri.get(s, 0))
+        # Берём прогресс потоков из progress_panel
+        sp = self._progress._stream_progress
+        # Активные потоки (< 100%), у которых есть строка для отображения
+        active = {s for s, p in sp.items() if p < 100} & set(self._stream_lines)
+        pool = active if active else set(self._stream_lines)
+        best = max(pool, key=lambda s: self._stream_pri.get(s, 0))
         self._log_panel.replace_last_line(self._stream_lines[best])
 
     def _on_download_finished(self, exit_code: int):

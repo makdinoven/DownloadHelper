@@ -93,14 +93,22 @@ class ProgressPanel(QWidget):
             self._info_label.setText("  |  ".join(info_parts))
 
     def _get_primary_progress(self) -> int:
-        """Возвращает прогресс самого приоритетного потока."""
+        """Возвращает прогресс активного потока (ещё не 100%).
+
+        Если есть потоки, которые ещё качаются (<100%), показываем
+        самый приоритетный из них. Если все дошли до 100% — возвращаем 100.
+        """
         if not self._stream_progress:
             return 0
+        # Потоки, которые ещё качаются
+        active = {s: p for s, p in self._stream_progress.items() if p < 100}
+        if not active:
+            return 100
         best_stream = max(
-            self._stream_progress,
+            active,
             key=lambda s: _STREAM_PRIORITY.get(s, 0),
         )
-        return self._stream_progress[best_stream]
+        return active[best_stream]
 
     def set_finished(self, success: bool):
         if success:
