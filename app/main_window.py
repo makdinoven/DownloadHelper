@@ -7,9 +7,10 @@ from dataclasses import dataclass
 
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QMessageBox, QSpinBox, QFileDialog,
+    QPushButton, QLabel, QMessageBox, QSpinBox, QFileDialog, QListWidget,
+    QListWidgetItem,
 )
-from PyQt6.QtCore import QSize
+from PyQt6.QtCore import QSize, Qt
 
 from app.core.command_parser import parse_command, ParsedCommand
 from app.core.normalizer import normalize_filename
@@ -139,10 +140,31 @@ class MainWindow(QMainWindow):
         ctrl_row.addStretch()
         layout.addLayout(ctrl_row)
 
-        # Метка очереди
-        self._queue_label = QLabel("")
-        self._queue_label.setStyleSheet("color: gray; font-size: 11px;")
-        layout.addWidget(self._queue_label)
+        # Раскрывающаяся очередь
+        queue_header = QHBoxLayout()
+        self._queue_toggle = QPushButton("▶ Очередь (0)")
+        self._queue_toggle.setStyleSheet(
+            "QPushButton { border: none; color: gray; font-size: 12px; text-align: left; }"
+        )
+        self._queue_toggle.setCheckable(True)
+        self._queue_toggle.clicked.connect(self._on_toggle_queue)
+        queue_header.addWidget(self._queue_toggle)
+        queue_header.addStretch()
+        self._queue_remove_btn = QPushButton("Удалить выбранное")
+        self._queue_remove_btn.setVisible(False)
+        self._queue_remove_btn.clicked.connect(self._on_remove_from_queue)
+        queue_header.addWidget(self._queue_remove_btn)
+        self._queue_clear_btn = QPushButton("Очистить")
+        self._queue_clear_btn.setVisible(False)
+        self._queue_clear_btn.clicked.connect(self._on_clear_queue)
+        queue_header.addWidget(self._queue_clear_btn)
+        layout.addLayout(queue_header)
+
+        self._queue_list = QListWidget()
+        self._queue_list.setMaximumHeight(120)
+        self._queue_list.setVisible(False)
+        self._queue_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        layout.addWidget(self._queue_list)
 
         self._add_queue_btn.clicked.connect(self._on_add_to_queue)
         self._download_btn.clicked.connect(self._on_download)
@@ -286,10 +308,38 @@ class MainWindow(QMainWindow):
 
     def _update_queue_label(self):
         n = len(self._queue)
-        if n > 0:
-            self._queue_label.setText(f"В очереди: {n}")
-        else:
-            self._queue_label.setText("")
+        self._queue_toggle.setText(
+            f"{'▼' if self._queue_toggle.isChecked() else '▶'} Очередь ({n})"
+        )
+        # Обновить список
+        self._queue_list.clear()
+        for i, item in enumerate(self._queue):
+            dest = item.dest_type.upper()
+            self._queue_list.addItem(f"{i + 1}. {item.name}  [{dest}]")
+
+    def _on_toggle_queue(self, checked: bool):
+        self._queue_list.setVisible(checked)
+        self._queue_remove_btn.setVisible(checked)
+        self._queue_clear_btn.setVisible(checked)
+        self._update_queue_label()
+
+    def _on_remove_from_queue(self):
+        rows = sorted(
+            {idx.row() for idx in self._queue_list.selectedIndexes()},
+            reverse=True,
+        )
+        for row in rows:
+            if 0 <= row < len(self._queue):
+                removed = self._queue.pop(row)
+                self._log_panel.append_text(f"Удалено из очереди: {removed.name}\n")
+        self._update_queue_label()
+
+    def _on_clear_queue(self):
+        if not self._queue:
+            return
+        self._queue.clear()
+        self._log_panel.append_text("Очередь очищена.\n")
+        self._update_queue_label()
 
     def _on_add_to_queue(self):
         item = self._make_queue_item()
