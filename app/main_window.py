@@ -58,10 +58,11 @@ class MainWindow(QMainWindow):
         self._parsed: ParsedCommand | None = None
 
         # Троттлинг обновлений прогресса (не чаще чем раз в 200 мс)
-        self._pending_progress: str | None = None
         self._progress_timer = QTimer(self)
         self._progress_timer.setInterval(200)
         self._progress_timer.timeout.connect(self._flush_progress)
+        self._stream_lines: dict[str, str] = {}  # {"vid": "...", "sub": "..."}
+        self._stream_pri = {"vid": 3, "aud": 2, "sub": 1}
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -428,6 +429,7 @@ class MainWindow(QMainWindow):
 
         self._log_panel.clear()
         self._progress.reset()
+        self._stream_lines.clear()
         self._progress.set_status("Загрузка...")
         self._log_panel.append_text(f"Запуск: {' '.join(args)}\n\n")
         self._download_btn.setEnabled(False)
@@ -454,18 +456,28 @@ class MainWindow(QMainWindow):
             self._task_mgr.append_log(self._current_item.task_id, text)
 
     def _on_download_progress(self, text: str):
-        """Строка прогресса — троттлим обновления UI."""
-        self._pending_progress = text
+        """Строка прогресса — запоминаем по потокам, показываем лучший."""
         self._progress.parse_output(text)
+
+        # Определяем поток
+        stripped = text.strip().lower()
+        stream = "unknown"
+        for prefix in ("vid", "aud", "sub"):
+            if stripped.startswith(prefix):
+                stream = prefix
+                break
+        self._stream_lines[stream] = text
+
         if not self._progress_timer.isActive():
             self._flush_progress()
             self._progress_timer.start()
 
     def _flush_progress(self):
-        """Применяет последнее прогресс-обновление к лог-панели."""
-        if self._pending_progress is not None:
-            self._log_panel.replace_last_line(self._pending_progress)
-            self._pending_progress = None
+        """Показывает в логах строку самого приоритетного потока."""
+        if not self._stream_lines:
+            return
+        best = max(self._stream_lines, key=lambda s: self._stream_pri.get(s, 0))
+        self._log_panel.replace_last_line(self._stream_lines[best])
 
     def _on_download_finished(self, exit_code: int):
         self._progress_timer.stop()
