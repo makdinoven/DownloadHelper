@@ -1,4 +1,4 @@
-"""JSON config manager for application settings."""
+"""JSON менеджер конфигурации приложения."""
 
 import json
 from pathlib import Path
@@ -8,11 +8,8 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 
 _DEFAULTS = {
     "save_path": str(Path.home() / "Downloads"),
-    "s3_endpoint": "",
-    "s3_access_key": "",
-    "s3_secret_key": "",
-    "s3_bucket": "",
-    "s3_region": "",
+    "s3_profiles": [],          # list[dict] — профили S3
+    "s3_active_profile": "",    # имя активного профиля
     "s3_default_path": "/",
 }
 
@@ -21,6 +18,7 @@ class ConfigManager:
     def __init__(self):
         self._data: dict = {}
         self._load()
+        self._migrate()
 
     def _load(self):
         if CONFIG_PATH.exists():
@@ -30,6 +28,25 @@ class ConfigManager:
                 self._data = {}
         else:
             self._data = {}
+
+    def _migrate(self):
+        """Миграция со старого формата (одиночный S3 конфиг) в профили."""
+        if "s3_endpoint" in self._data and "s3_profiles" not in self._data:
+            old = {
+                "name": "Default",
+                "endpoint": self._data.pop("s3_endpoint", ""),
+                "access_key": self._data.pop("s3_access_key", ""),
+                "secret_key": self._data.pop("s3_secret_key", ""),
+                "bucket": self._data.pop("s3_bucket", ""),
+                "region": self._data.pop("s3_region", ""),
+            }
+            if old["endpoint"] or old["bucket"]:
+                self._data["s3_profiles"] = [old]
+                self._data["s3_active_profile"] = old["name"]
+            else:
+                self._data["s3_profiles"] = []
+                self._data["s3_active_profile"] = ""
+            self.save()
 
     def get(self, key: str, default=None):
         return self._data.get(key, _DEFAULTS.get(key, default))
@@ -44,20 +61,64 @@ class ConfigManager:
             encoding="utf-8",
         )
 
-    def get_s3_config(self) -> dict:
-        return {
-            "endpoint": self.get("s3_endpoint"),
-            "access_key": self.get("s3_access_key"),
-            "secret_key": self.get("s3_secret_key"),
-            "bucket": self.get("s3_bucket"),
-            "region": self.get("s3_region"),
-        }
+    # ── S3 профили ───────────────────────────────────────────────
 
-    def set_s3_config(self, endpoint: str, access_key: str, secret_key: str,
-                      bucket: str, region: str):
-        self.set("s3_endpoint", endpoint)
-        self.set("s3_access_key", access_key)
-        self.set("s3_secret_key", secret_key)
-        self.set("s3_bucket", bucket)
-        self.set("s3_region", region)
+    def get_s3_profiles(self) -> list[dict]:
+        return list(self.get("s3_profiles", []))
+
+    def get_s3_profile_names(self) -> list[str]:
+        return [p["name"] for p in self.get_s3_profiles()]
+
+    def get_s3_profile(self, name: str) -> dict | None:
+        for p in self.get_s3_profiles():
+            if p["name"] == name:
+                return dict(p)
+        return None
+
+    def save_s3_profile(self, profile: dict):
+        """Сохранить или обновить профиль S3 (по имени)."""
+        profiles = self.get_s3_profiles()
+        for i, p in enumerate(profiles):
+            if p["name"] == profile["name"]:
+                profiles[i] = profile
+                self.set("s3_profiles", profiles)
+                self.save()
+                return
+        profiles.append(profile)
+        self.set("s3_profiles", profiles)
         self.save()
+
+    def delete_s3_profile(self, name: str):
+        profiles = [p for p in self.get_s3_profiles() if p["name"] != name]
+        self.set("s3_profiles", profiles)
+        if self.get("s3_active_profile") == name:
+            self.set("s3_active_profile", profiles[0]["name"] if profiles else "")
+        self.save()
+
+    def rename_s3_profile(self, old_name: str, new_name: str):
+        profiles = self.get_s3_profiles()
+        for p in profiles:
+            if p["name"] == old_name:
+                p["name"] = new_name
+                break
+        self.set("s3_profiles", profiles)
+        if self.get("s3_active_profile") == old_name:
+            self.set("s3_active_profile", new_name)
+        self.save()
+
+    def get_active_s3_profile(self) -> str:
+        return self.get("s3_active_profile", "")
+
+    def set_active_s3_profile(self, name: str):
+        self.set("s3_active_profile", name)
+        self.save()
+
+    def get_s3_config(self, profile_name: str = "") -> dict | None:
+        """Получить конфиг S3 по имени профиля (или активного)."""
+        name = profile_name or self.get_active_s3_profile()
+        if not name:
+            profiles = self.get_s3_profiles()
+            if profiles:
+                return profiles[0]
+            return None
+        return self.get_s3_profile(name)

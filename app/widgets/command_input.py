@@ -1,9 +1,22 @@
-"""Виджет ввода команды с кнопкой Разобрать."""
+"""Виджет ввода команды с автоматическим парсингом при вставке."""
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QLabel
+from PyQt6.QtCore import pyqtSignal
+
+
+class _PasteAwareTextEdit(QTextEdit):
+    """QTextEdit, который сигналит о вставке текста."""
+    pasted = pyqtSignal()
+
+    def insertFromMimeData(self, source):
+        super().insertFromMimeData(source)
+        self.pasted.emit()
 
 
 class CommandInput(QWidget):
+    # Сигнал: текст изменился через вставку — пора парсить
+    auto_parse_requested = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -21,9 +34,10 @@ class CommandInput(QWidget):
         label = QLabel("Команда:")
         layout.addWidget(label)
 
-        self.text_edit = QTextEdit()
+        self.text_edit = _PasteAwareTextEdit()
         self.text_edit.setPlaceholderText("Вставьте команду N_m3u8DL-RE сюда...")
         self.text_edit.setMaximumHeight(100)
+        self.text_edit.pasted.connect(self._on_pasted)
         layout.addWidget(self.text_edit)
 
         btn_layout = QHBoxLayout()
@@ -31,6 +45,9 @@ class CommandInput(QWidget):
         btn_layout.addWidget(self.parse_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
+
+    def _on_pasted(self):
+        self.auto_parse_requested.emit()
 
     def get_text(self) -> str:
         return self.text_edit.toPlainText().strip()

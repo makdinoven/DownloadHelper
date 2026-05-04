@@ -37,6 +37,7 @@ class QueueItem:
     dest_type: str          # "local" / "s3"
     dest_path: str
     delete_local: bool
+    s3_profile: str = ""
     task_id: int | None = None
     retries_left: int = 0
 
@@ -74,6 +75,16 @@ class MainWindow(QMainWindow):
 
         self._tabs = QTabWidget()
         central_layout.addWidget(self._tabs, 1)
+
+        github_link = QLabel(
+            '<a href="https://github.com/makdinoven/DownloadHelper/releases">'
+            'github.com/makdinoven/DownloadHelper/releases</a>'
+        )
+        github_link.setOpenExternalLinks(True)
+        github_link.setAlignment(github_link.alignment())
+        github_link.setStyleSheet("color: gray; font-size: 11px; padding: 2px 0;")
+        central_layout.addWidget(github_link)
+
         self.setCentralWidget(central)
 
         self._build_new_task_tab()
@@ -81,6 +92,9 @@ class MainWindow(QMainWindow):
 
         self._downloader.output_received.connect(self._on_download_output)
         self._downloader.finished.connect(self._on_download_finished)
+
+        # Загрузить S3 профили в комбо-бокс
+        self._refresh_s3_profiles()
 
     # ── Вкладка "Новая задача" ───────────────────────────────────
 
@@ -90,6 +104,7 @@ class MainWindow(QMainWindow):
 
         self._cmd_input = CommandInput()
         self._cmd_input.parse_btn.clicked.connect(self._on_parse)
+        self._cmd_input.auto_parse_requested.connect(self._on_parse)
         layout.addWidget(self._cmd_input)
 
         self._file_name = FileNameEdit()
@@ -162,6 +177,13 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(tab, "История")
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
+    # ── S3 профили ───────────────────────────────────────────────
+
+    def _refresh_s3_profiles(self):
+        names = self._config.get_s3_profile_names()
+        active = self._config.get_active_s3_profile()
+        self._dest_panel.load_s3_profiles(names, active)
+
     # ── Общие слоты ──────────────────────────────────────────────
 
     def _on_parse(self):
@@ -184,6 +206,7 @@ class MainWindow(QMainWindow):
     def _on_s3_settings(self):
         dlg = S3ConfigDialog(self._config, self)
         dlg.exec()
+        self._refresh_s3_profiles()
 
     def _on_help(self):
         dlg = HelpDialog(self)
@@ -215,6 +238,12 @@ class MainWindow(QMainWindow):
         dest_type = "local" if is_local else "s3"
         dest_path = save_dir if is_local else self._dest_panel.get_s3_path()
         delete_local = (not is_local) and self._dest_panel.should_delete_local()
+        s3_profile = "" if is_local else self._dest_panel.get_selected_s3_profile()
+
+        if not is_local and not s3_profile:
+            QMessageBox.warning(self, "Ошибка",
+                                "Нет S3 профилей. Создайте профиль в настройках.")
+            return None
 
         return QueueItem(
             raw_command=raw_cmd,
@@ -224,6 +253,7 @@ class MainWindow(QMainWindow):
             dest_type=dest_type,
             dest_path=dest_path,
             delete_local=delete_local,
+            s3_profile=s3_profile,
             retries_left=self._retry_spin.value(),
         )
 
@@ -313,7 +343,7 @@ class MainWindow(QMainWindow):
             self._config.save()
         else:
             self._config.set("s3_default_path", item.dest_path)
-            self._config.save()
+            self._config.set_active_s3_profile(item.s3_profile)
 
         self._log_panel.clear()
         self._progress.reset()
@@ -365,7 +395,6 @@ class MainWindow(QMainWindow):
                         item.task_id,
                         f"\n--- Повторная попытка (осталось {item.retries_left}) ---\n"
                     )
-                # Возвращаем в начало очереди и запускаем снова
                 self._queue.insert(0, item)
                 self._current_item = None
                 self._process_next_in_queue()
@@ -415,10 +444,25 @@ class MainWindow(QMainWindow):
             self._process_next_in_queue()
             return
 
-        s3_config = self._config.get_s3_config()
+        s3_config = self._config.get_s3_config(item.s3_profile)
+        if not s3_config:
+            self._log_panel.append_text(
+                f"Ошибка: S3 профиль «{item.s3_profile}» не найден.\n"
+            )
+            self._progress.set_finished(False)
+            if item.task_id:
+                self._task_mgr.update_status(item.task_id, "Failed")
+            self._current_item = None
+            self._download_btn.setEnabled(True)
+            self._add_queue_btn.setEnabled(True)
+            self._process_next_in_queue()
+            return
+
         s3_path = item.dest_path or f"/{item.name}"
         if s3_path.endswith("/"):
             s3_path += os.path.basename(local_file)
+
+        self._log_panel.append_text(f"S3 профиль: {item.s3_profile}\n")
 
         self._uploader = S3Uploader(
             local_file, s3_path, s3_config,

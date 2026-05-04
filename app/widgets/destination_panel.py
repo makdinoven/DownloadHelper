@@ -1,8 +1,8 @@
-"""Панель выбора назначения: Локально / S3."""
+"""Панель выбора назначения: Локально / S3 с выбором профиля."""
 
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QRadioButton, QLineEdit,
-    QPushButton, QFileDialog, QButtonGroup, QCheckBox,
+    QPushButton, QFileDialog, QButtonGroup, QCheckBox, QComboBox,
 )
 
 
@@ -35,6 +35,11 @@ class DestinationPanel(QWidget):
         self._btn_group.addButton(self.s3_radio)
         s3_row.addWidget(self.s3_radio)
 
+        self.s3_profile_combo = QComboBox()
+        self.s3_profile_combo.setMinimumWidth(140)
+        self.s3_profile_combo.setEnabled(False)
+        s3_row.addWidget(self.s3_profile_combo)
+
         self.s3_path_edit = QLineEdit()
         self.s3_path_edit.setPlaceholderText("/путь/в/бакете")
         self.s3_path_edit.setEnabled(False)
@@ -58,6 +63,7 @@ class DestinationPanel(QWidget):
     def _on_toggle(self, local_checked: bool):
         self.local_path_edit.setEnabled(local_checked)
         self.browse_btn.setEnabled(local_checked)
+        self.s3_profile_combo.setEnabled(not local_checked)
         self.s3_path_edit.setEnabled(not local_checked)
         self.s3_settings_btn.setEnabled(not local_checked)
         self.delete_local_cb.setEnabled(not local_checked)
@@ -66,6 +72,18 @@ class DestinationPanel(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Выберите папку для загрузки")
         if path:
             self.local_path_edit.setText(path)
+
+    def load_s3_profiles(self, names: list[str], active: str = ""):
+        """Загрузить список профилей S3 в комбо-бокс."""
+        self.s3_profile_combo.clear()
+        if not names:
+            return
+        self.s3_profile_combo.addItems(names)
+        if active and active in names:
+            self.s3_profile_combo.setCurrentText(active)
+
+    def get_selected_s3_profile(self) -> str:
+        return self.s3_profile_combo.currentText()
 
     def is_local(self) -> bool:
         return self.local_radio.isChecked()

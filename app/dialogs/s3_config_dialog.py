@@ -1,10 +1,10 @@
-"""Диалог настроек S3."""
+"""Диалог управления S3 профилями."""
 
 from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout,
-    QLabel,
+    QLabel, QListWidget, QMessageBox, QInputDialog, QSplitter, QWidget,
 )
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, Qt
 
 from app.core.config import ConfigManager
 
@@ -45,65 +45,209 @@ class S3ConfigDialog(QDialog):
         self._config = config
         self._test_worker: _S3TestWorker | None = None
         self.setWindowTitle("Настройки S3")
-        self.setMinimumWidth(400)
+        self.setMinimumSize(500, 400)
 
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
+        main_layout = QHBoxLayout(self)
 
-        self.endpoint_edit = QLineEdit(config.get("s3_endpoint"))
-        self.endpoint_edit.setPlaceholderText("https://s3.example.com")
-        form.addRow("Адрес (Endpoint):", self.endpoint_edit)
+        # ── Левая панель: список профилей ────────────────────────
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Профили:"))
 
-        self.region_edit = QLineEdit(config.get("s3_region"))
-        self.region_edit.setPlaceholderText("us-east-1")
-        form.addRow("Регион:", self.region_edit)
+        self._profile_list = QListWidget()
+        self._profile_list.currentRowChanged.connect(self._on_profile_selected)
+        left.addWidget(self._profile_list, 1)
 
-        self.bucket_edit = QLineEdit(config.get("s3_bucket"))
-        self.bucket_edit.setPlaceholderText("my-bucket")
-        form.addRow("Бакет:", self.bucket_edit)
+        list_btns = QHBoxLayout()
+        add_btn = QPushButton("Добавить")
+        add_btn.clicked.connect(self._on_add_profile)
+        self._rename_btn = QPushButton("Переименовать")
+        self._rename_btn.clicked.connect(self._on_rename_profile)
+        self._del_btn = QPushButton("Удалить")
+        self._del_btn.clicked.connect(self._on_delete_profile)
+        list_btns.addWidget(add_btn)
+        list_btns.addWidget(self._rename_btn)
+        list_btns.addWidget(self._del_btn)
+        left.addLayout(list_btns)
 
-        self.access_key_edit = QLineEdit(config.get("s3_access_key"))
-        form.addRow("Ключ доступа:", self.access_key_edit)
+        left_widget = QWidget()
+        left_widget.setLayout(left)
+        left_widget.setFixedWidth(180)
+        main_layout.addWidget(left_widget)
 
-        self.secret_key_edit = QLineEdit(config.get("s3_secret_key"))
-        self.secret_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Секретный ключ:", self.secret_key_edit)
+        # ── Правая панель: редактирование профиля ────────────────
+        right = QVBoxLayout()
 
-        layout.addLayout(form)
+        self._form_container = QWidget()
+        form = QFormLayout(self._form_container)
 
-        # Кнопка проверки подключения
+        self._endpoint_edit = QLineEdit()
+        self._endpoint_edit.setPlaceholderText("https://s3.example.com")
+        form.addRow("Адрес (Endpoint):", self._endpoint_edit)
+
+        self._region_edit = QLineEdit()
+        self._region_edit.setPlaceholderText("us-east-1")
+        form.addRow("Регион:", self._region_edit)
+
+        self._bucket_edit = QLineEdit()
+        self._bucket_edit.setPlaceholderText("my-bucket")
+        form.addRow("Бакет:", self._bucket_edit)
+
+        self._access_key_edit = QLineEdit()
+        form.addRow("Ключ доступа:", self._access_key_edit)
+
+        self._secret_key_edit = QLineEdit()
+        self._secret_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Секретный ключ:", self._secret_key_edit)
+
+        right.addWidget(self._form_container, 1)
+
+        # Проверка подключения
         test_row = QHBoxLayout()
         self._test_btn = QPushButton("Проверить подключение")
         self._test_btn.clicked.connect(self._on_test)
         test_row.addWidget(self._test_btn)
-
         self._test_status = QLabel("")
         test_row.addWidget(self._test_status, 1)
-        layout.addLayout(test_row)
+        right.addLayout(test_row)
 
-        # Кнопки сохранить/отмена
-        btn_layout = QHBoxLayout()
-        save_btn = QPushButton("Сохранить")
-        cancel_btn = QPushButton("Отмена")
-        btn_layout.addStretch()
-        btn_layout.addWidget(save_btn)
-        btn_layout.addWidget(cancel_btn)
-        layout.addLayout(btn_layout)
+        # Кнопки сохранить / закрыть
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._save_btn = QPushButton("Сохранить профиль")
+        self._save_btn.clicked.connect(self._on_save)
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self._save_btn)
+        btn_row.addWidget(close_btn)
+        right.addLayout(btn_row)
 
-        save_btn.clicked.connect(self._save)
-        cancel_btn.clicked.connect(self.reject)
+        main_layout.addLayout(right, 1)
 
-    def _current_s3_config(self) -> dict:
+        # Загрузить список профилей
+        self._reload_list()
+        self._update_form_enabled()
+
+    # ── Загрузка списка ──────────────────────────────────────────
+
+    def _reload_list(self):
+        self._profile_list.clear()
+        names = self._config.get_s3_profile_names()
+        self._profile_list.addItems(names)
+        active = self._config.get_active_s3_profile()
+        if active in names:
+            self._profile_list.setCurrentRow(names.index(active))
+        elif names:
+            self._profile_list.setCurrentRow(0)
+        self._update_form_enabled()
+
+    def _update_form_enabled(self):
+        has_profiles = self._profile_list.count() > 0
+        self._form_container.setEnabled(has_profiles)
+        self._test_btn.setEnabled(has_profiles)
+        self._save_btn.setEnabled(has_profiles)
+        self._rename_btn.setEnabled(has_profiles)
+        self._del_btn.setEnabled(has_profiles)
+
+    # ── Выбор профиля ────────────────────────────────────────────
+
+    def _on_profile_selected(self, row: int):
+        self._test_status.setText("")
+        if row < 0:
+            return
+        name = self._profile_list.item(row).text()
+        profile = self._config.get_s3_profile(name)
+        if not profile:
+            return
+        self._endpoint_edit.setText(profile.get("endpoint", ""))
+        self._region_edit.setText(profile.get("region", ""))
+        self._bucket_edit.setText(profile.get("bucket", ""))
+        self._access_key_edit.setText(profile.get("access_key", ""))
+        self._secret_key_edit.setText(profile.get("secret_key", ""))
+
+    # ── Добавить / переименовать / удалить ───────────────────────
+
+    def _on_add_profile(self):
+        name, ok = QInputDialog.getText(
+            self, "Новый профиль", "Название профиля:"
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if name in self._config.get_s3_profile_names():
+            QMessageBox.warning(self, "Ошибка", f"Профиль «{name}» уже существует.")
+            return
+        self._config.save_s3_profile({
+            "name": name, "endpoint": "", "region": "",
+            "bucket": "", "access_key": "", "secret_key": "",
+        })
+        self._reload_list()
+        # Выбрать новый
+        names = self._config.get_s3_profile_names()
+        self._profile_list.setCurrentRow(names.index(name))
+
+    def _on_rename_profile(self):
+        row = self._profile_list.currentRow()
+        if row < 0:
+            return
+        old_name = self._profile_list.item(row).text()
+        new_name, ok = QInputDialog.getText(
+            self, "Переименовать", "Новое название:", text=old_name
+        )
+        if not ok or not new_name.strip() or new_name.strip() == old_name:
+            return
+        new_name = new_name.strip()
+        if new_name in self._config.get_s3_profile_names():
+            QMessageBox.warning(self, "Ошибка", f"Профиль «{new_name}» уже существует.")
+            return
+        self._config.rename_s3_profile(old_name, new_name)
+        self._reload_list()
+
+    def _on_delete_profile(self):
+        row = self._profile_list.currentRow()
+        if row < 0:
+            return
+        name = self._profile_list.item(row).text()
+        reply = QMessageBox.question(
+            self, "Удаление", f"Удалить профиль «{name}»?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._config.delete_s3_profile(name)
+            self._reload_list()
+
+    # ── Сохранение ───────────────────────────────────────────────
+
+    def _on_save(self):
+        row = self._profile_list.currentRow()
+        if row < 0:
+            return
+        name = self._profile_list.item(row).text()
+        profile = {
+            "name": name,
+            "endpoint": self._endpoint_edit.text().strip(),
+            "region": self._region_edit.text().strip(),
+            "bucket": self._bucket_edit.text().strip(),
+            "access_key": self._access_key_edit.text().strip(),
+            "secret_key": self._secret_key_edit.text().strip(),
+        }
+        self._config.save_s3_profile(profile)
+        self._config.set_active_s3_profile(name)
+        self._test_status.setStyleSheet("color: green;")
+        self._test_status.setText("Сохранено")
+
+    # ── Проверка подключения ─────────────────────────────────────
+
+    def _current_form_config(self) -> dict:
         return {
-            "endpoint": self.endpoint_edit.text().strip(),
-            "access_key": self.access_key_edit.text().strip(),
-            "secret_key": self.secret_key_edit.text().strip(),
-            "bucket": self.bucket_edit.text().strip(),
-            "region": self.region_edit.text().strip(),
+            "endpoint": self._endpoint_edit.text().strip(),
+            "access_key": self._access_key_edit.text().strip(),
+            "secret_key": self._secret_key_edit.text().strip(),
+            "bucket": self._bucket_edit.text().strip(),
+            "region": self._region_edit.text().strip(),
         }
 
     def _on_test(self):
-        cfg = self._current_s3_config()
+        cfg = self._current_form_config()
         if not cfg["bucket"]:
             self._test_status.setStyleSheet("color: red;")
             self._test_status.setText("Укажите бакет")
@@ -119,20 +263,6 @@ class S3ConfigDialog(QDialog):
 
     def _on_test_result(self, success: bool, message: str):
         self._test_btn.setEnabled(True)
-        if success:
-            self._test_status.setStyleSheet("color: green;")
-        else:
-            self._test_status.setStyleSheet("color: red;")
+        self._test_status.setStyleSheet("color: green;" if success else "color: red;")
         self._test_status.setText(message)
         self._test_worker = None
-
-    def _save(self):
-        cfg = self._current_s3_config()
-        self._config.set_s3_config(
-            endpoint=cfg["endpoint"],
-            access_key=cfg["access_key"],
-            secret_key=cfg["secret_key"],
-            bucket=cfg["bucket"],
-            region=cfg["region"],
-        )
-        self.accept()
