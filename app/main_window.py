@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QMessageBox, QSpinBox, QFileDialog, QListWidget,
     QListWidgetItem,
 )
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QTimer
 
 from app.core.command_parser import parse_command, ParsedCommand
 from app.core.normalizer import normalize_filename
@@ -56,6 +56,12 @@ class MainWindow(QMainWindow):
         self._current_item: QueueItem | None = None
         self._queue: list[QueueItem] = []
         self._parsed: ParsedCommand | None = None
+
+        # Троттлинг обновлений прогресса (не чаще чем раз в 200 мс)
+        self._pending_progress: str | None = None
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(200)
+        self._progress_timer.timeout.connect(self._flush_progress)
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -448,11 +454,22 @@ class MainWindow(QMainWindow):
             self._task_mgr.append_log(self._current_item.task_id, text)
 
     def _on_download_progress(self, text: str):
-        """Строка прогресса (\r) — обновляет последнюю строку и прогресс-бар."""
-        self._log_panel.replace_last_line(text)
+        """Строка прогресса — троттлим обновления UI."""
+        self._pending_progress = text
         self._progress.parse_output(text)
+        if not self._progress_timer.isActive():
+            self._flush_progress()
+            self._progress_timer.start()
+
+    def _flush_progress(self):
+        """Применяет последнее прогресс-обновление к лог-панели."""
+        if self._pending_progress is not None:
+            self._log_panel.replace_last_line(self._pending_progress)
+            self._pending_progress = None
 
     def _on_download_finished(self, exit_code: int):
+        self._progress_timer.stop()
+        self._flush_progress()
         self._stop_btn.setEnabled(False)
 
         item = self._current_item

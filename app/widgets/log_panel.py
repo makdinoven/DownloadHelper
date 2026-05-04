@@ -10,6 +10,7 @@ class LogPanel(QPlainTextEdit):
         self.setReadOnly(True)
         self.setFont(QFont("Consolas", 9))
         self.setMaximumBlockCount(5000)
+        self._last_progress_text = ""
 
     def append_text(self, text: str):
         """Добавить текст в конец лога."""
@@ -18,7 +19,10 @@ class LogPanel(QPlainTextEdit):
         self.moveCursor(QTextCursor.MoveOperation.End)
 
     def replace_last_line(self, text: str):
-        """Заменить последнюю строку (для прогресса с \\r)."""
+        """Заменить последнюю строку (для прогресса). Пропускает дубликаты."""
+        if text == self._last_progress_text:
+            return
+        self._last_progress_text = text
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.movePosition(
