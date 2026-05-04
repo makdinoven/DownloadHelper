@@ -382,7 +382,7 @@ class MainWindow(QMainWindow):
                 f"Загрузка невозможна. Отсутствуют: {', '.join(missing)}\n"
             )
             self._download_btn.setEnabled(True)
-            self._add_queue_btn.setEnabled(True)
+    
             return
 
         # Проверка свободного места
@@ -425,7 +425,6 @@ class MainWindow(QMainWindow):
         self._progress.set_status("Загрузка...")
         self._log_panel.append_text(f"Запуск: {' '.join(args)}\n\n")
         self._download_btn.setEnabled(False)
-        self._add_queue_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
         self._downloader.start(args)
 
@@ -437,7 +436,7 @@ class MainWindow(QMainWindow):
         self._queue.clear()
         self._update_queue_label()
         self._download_btn.setEnabled(True)
-        self._add_queue_btn.setEnabled(True)
+
         self._stop_btn.setEnabled(False)
         self._progress.set_status("Остановлено")
         self._log_panel.append_text("\n--- Остановлено ---\n")
@@ -459,7 +458,7 @@ class MainWindow(QMainWindow):
         item = self._current_item
         if not item:
             self._download_btn.setEnabled(True)
-            self._add_queue_btn.setEnabled(True)
+    
             return
 
         if exit_code != 0:
@@ -486,7 +485,7 @@ class MainWindow(QMainWindow):
                 self._task_mgr.update_status(item.task_id, "Failed")
             self._current_item = None
             self._download_btn.setEnabled(True)
-            self._add_queue_btn.setEnabled(True)
+    
             self._process_next_in_queue()
             return
 
@@ -500,7 +499,7 @@ class MainWindow(QMainWindow):
                 self._task_mgr.update_status(item.task_id, "Done")
             self._current_item = None
             self._download_btn.setEnabled(True)
-            self._add_queue_btn.setEnabled(True)
+    
             self._process_next_in_queue()
 
     # ── S3 загрузка ──────────────────────────────────────────────
@@ -520,7 +519,7 @@ class MainWindow(QMainWindow):
                 self._task_mgr.update_status(item.task_id, "Failed")
             self._current_item = None
             self._download_btn.setEnabled(True)
-            self._add_queue_btn.setEnabled(True)
+    
             self._process_next_in_queue()
             return
 
@@ -534,7 +533,7 @@ class MainWindow(QMainWindow):
                 self._task_mgr.update_status(item.task_id, "Failed")
             self._current_item = None
             self._download_btn.setEnabled(True)
-            self._add_queue_btn.setEnabled(True)
+    
             self._process_next_in_queue()
             return
 
@@ -582,7 +581,7 @@ class MainWindow(QMainWindow):
         self._current_item = None
         self._uploader = None
         self._download_btn.setEnabled(True)
-        self._add_queue_btn.setEnabled(True)
+
         self._process_next_in_queue()
 
     # ── Проверка свободного места ────────────────────────────────
