@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QMessageBox, QSpinBox,
+    QPushButton, QLabel, QMessageBox, QSpinBox, QFileDialog,
 )
 from PyQt6.QtCore import QSize
 
@@ -152,7 +152,19 @@ class MainWindow(QMainWindow):
         self._progress = ProgressPanel()
         layout.addWidget(self._progress)
 
-        layout.addWidget(QLabel("Логи:"))
+        log_header = QHBoxLayout()
+        log_header.addWidget(QLabel("Логи:"))
+        log_header.addStretch()
+        copy_log_btn = QPushButton("Копировать")
+        copy_log_btn.setToolTip("Копировать лог в буфер обмена")
+        copy_log_btn.clicked.connect(lambda: self._copy_log(self._log_panel))
+        save_log_btn = QPushButton("Сохранить")
+        save_log_btn.setToolTip("Сохранить лог в файл")
+        save_log_btn.clicked.connect(lambda: self._save_log(self._log_panel))
+        log_header.addWidget(copy_log_btn)
+        log_header.addWidget(save_log_btn)
+        layout.addLayout(log_header)
+
         self._log_panel = LogPanel()
         layout.addWidget(self._log_panel, 1)
 
@@ -167,7 +179,19 @@ class MainWindow(QMainWindow):
         self._task_list = TaskList()
         layout.addWidget(self._task_list, 1)
 
-        layout.addWidget(QLabel("Логи задачи:"))
+        hist_log_header = QHBoxLayout()
+        hist_log_header.addWidget(QLabel("Логи задачи:"))
+        hist_log_header.addStretch()
+        copy_hist_btn = QPushButton("Копировать")
+        copy_hist_btn.setToolTip("Копировать лог в буфер обмена")
+        copy_hist_btn.clicked.connect(lambda: self._copy_log(self._history_log))
+        save_hist_btn = QPushButton("Сохранить")
+        save_hist_btn.setToolTip("Сохранить лог в файл")
+        save_hist_btn.clicked.connect(lambda: self._save_log(self._history_log))
+        hist_log_header.addWidget(copy_hist_btn)
+        hist_log_header.addWidget(save_hist_btn)
+        layout.addLayout(hist_log_header)
+
         self._history_log = LogPanel()
         layout.addWidget(self._history_log, 1)
 
@@ -561,3 +585,23 @@ class MainWindow(QMainWindow):
             self._task_mgr.delete_task(task_id)
             self._refresh_history()
             self._history_log.clear()
+
+    # ── Копирование / сохранение логов ────────────────────────────
+
+    def _copy_log(self, panel: LogPanel):
+        text = panel.toPlainText()
+        if not text.strip():
+            return
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(text)
+
+    def _save_log(self, panel: LogPanel):
+        text = panel.toPlainText()
+        if not text.strip():
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить лог", "log.txt", "Text files (*.txt);;All files (*)"
+        )
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
