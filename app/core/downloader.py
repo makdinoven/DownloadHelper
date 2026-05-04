@@ -28,12 +28,10 @@ def _app_dir() -> str:
 
 def find_tool(name: str) -> ToolStatus:
     """Ищет утилиту в PATH, затем рядом с приложением."""
-    # 1. PATH
     found = shutil.which(name)
     if found:
         return ToolStatus(name=name, found=True, path=found)
 
-    # 2. Рядом с exe
     app = _app_dir()
     for suffix in ("", ".exe"):
         candidate = os.path.join(app, name + suffix)
@@ -76,7 +74,10 @@ def format_tool_check_log(statuses: list[ToolStatus]) -> str:
 
 
 class Downloader(QObject):
-    output_received = pyqtSignal(str)
+    # Обычная строка лога (переводы строк, сообщения) — идёт в лог-панель
+    log_received = pyqtSignal(str)
+    # Строка прогресса (\r) — идёт в прогресс-бар и замену последней строки
+    progress_received = pyqtSignal(str)
     finished = pyqtSignal(int)  # код выхода
 
     def __init__(self, parent=None):
@@ -85,9 +86,11 @@ class Downloader(QObject):
         self._process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self._process.readyReadStandardOutput.connect(self._on_output)
         self._process.finished.connect(self._on_finished)
+        self._buffer = ""
 
     def start(self, args: list[str]):
         """Запустить N_m3u8DL-RE. args[0] — путь к исполняемому файлу."""
+        self._buffer = ""
         exe = args[0]
         self._process.start(exe, args[1:])
 
@@ -105,13 +108,43 @@ class Downloader(QObject):
             text = data.decode("utf-8", errors="replace")
         except Exception:
             text = str(data)
-        # Обработка \r строк прогресса: оставляем только последний сегмент
-        if "\r" in text:
-            lines = text.split("\r")
-            text = lines[-1] if lines[-1] else (lines[-2] if len(lines) > 1 else text)
-            if not text.endswith("\n"):
-                text += "\n"
-        self.output_received.emit(text)
+
+        # Собираем буфер, чтобы не разрывать строки
+        self._buffer += text
+
+        while self._buffer:
+            # Ищем \n или \r
+            nl = self._buffer.find("\n")
+            cr = self._buffer.find("\r")
+
+            if nl == -1 and cr == -1:
+                # Нет разделителей — ждём ещё данных
+                break
+
+            # Берём ближайший разделитель
+            if nl == -1:
+                pos, sep = cr, "\r"
+            elif cr == -1:
+                pos, sep = nl, "\n"
+            else:
+                pos, sep = (cr, "\r") if cr < nl else (nl, "\n")
+
+            line = self._buffer[:pos]
+            self._buffer = self._buffer[pos + 1:]
+
+            if not line.strip():
+                continue
+
+            if sep == "\r":
+                # Строка прогресса — обновляет прогресс-бар и последнюю строку
+                self.progress_received.emit(line)
+            else:
+                # Обычная строка — в лог
+                self.log_received.emit(line + "\n")
 
     def _on_finished(self, exit_code, _exit_status):
+        # Сбросить остатки буфера
+        if self._buffer.strip():
+            self.log_received.emit(self._buffer.strip() + "\n")
+        self._buffer = ""
         self.finished.emit(exit_code)

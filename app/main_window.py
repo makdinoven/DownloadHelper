@@ -90,7 +90,8 @@ class MainWindow(QMainWindow):
         self._build_new_task_tab()
         self._build_history_tab()
 
-        self._downloader.output_received.connect(self._on_download_output)
+        self._downloader.log_received.connect(self._on_download_log)
+        self._downloader.progress_received.connect(self._on_download_progress)
         self._downloader.finished.connect(self._on_download_finished)
 
         # Загрузить S3 профили в комбо-бокс
@@ -367,11 +368,16 @@ class MainWindow(QMainWindow):
         self._progress.set_status("Остановлено")
         self._log_panel.append_text("\n--- Остановлено ---\n")
 
-    def _on_download_output(self, text: str):
+    def _on_download_log(self, text: str):
+        """Обычная строка лога (с переводом строки)."""
         self._log_panel.append_text(text)
-        self._progress.parse_output(text)
         if self._current_item and self._current_item.task_id:
             self._task_mgr.append_log(self._current_item.task_id, text)
+
+    def _on_download_progress(self, text: str):
+        """Строка прогресса (\r) — обновляет последнюю строку и прогресс-бар."""
+        self._log_panel.replace_last_line(text)
+        self._progress.parse_output(text)
 
     def _on_download_finished(self, exit_code: int):
         self._stop_btn.setEnabled(False)

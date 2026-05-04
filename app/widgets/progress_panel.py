@@ -26,10 +26,15 @@ class ProgressPanel(QWidget):
         self._info_label.setStyleSheet("color: gray; font-size: 11px;")
         layout.addWidget(self._info_label)
 
-        # Регулярки для парсинга вывода N_m3u8DL-RE
+        # Регулярки для N_m3u8DL-RE
+        # Формат: "Vid 1080 | Aud 1 | 45.12% | 12.3 MiB/s | 00:01:23"
+        # или:    "45.12% | 12.3 MiB/s | 00:01:23"
         self._pct_re = re.compile(r"(\d+(?:\.\d+)?)%")
-        self._speed_re = re.compile(r"(\d+(?:\.\d+)?\s*[KMG]?B/s)", re.IGNORECASE)
-        self._eta_re = re.compile(r"ETA\s+(\S+)", re.IGNORECASE)
+        self._speed_re = re.compile(
+            r"(\d+(?:\.\d+)?\s*(?:Ki?B|Mi?B|Gi?B|[KMG]?B|B)(?:ps|/s))", re.IGNORECASE
+        )
+        # Время формата HH:MM:SS или MM:SS
+        self._time_re = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)")
 
     def reset(self):
         self._progress_bar.setValue(0)
@@ -46,7 +51,7 @@ class ProgressPanel(QWidget):
         self._info_label.setText(text)
 
     def parse_output(self, text: str):
-        """Парсит вывод N_m3u8DL-RE и обновляет прогресс-бар."""
+        """Парсит строку прогресса N_m3u8DL-RE и обновляет бар."""
         pct_match = self._pct_re.search(text)
         if pct_match:
             pct = float(pct_match.group(1))
@@ -57,9 +62,10 @@ class ProgressPanel(QWidget):
         if speed_match:
             info_parts.append(f"Скорость: {speed_match.group(1)}")
 
-        eta_match = self._eta_re.search(text)
-        if eta_match:
-            info_parts.append(f"Осталось: {eta_match.group(1)}")
+        # Берём последнее совпадение времени (обычно это оставшееся время)
+        time_matches = self._time_re.findall(text)
+        if time_matches:
+            info_parts.append(f"Осталось: {time_matches[-1]}")
 
         if info_parts:
             self._info_label.setText("  |  ".join(info_parts))

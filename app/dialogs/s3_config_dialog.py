@@ -45,7 +45,7 @@ class S3ConfigDialog(QDialog):
         self._config = config
         self._test_worker: _S3TestWorker | None = None
         self.setWindowTitle("Настройки S3")
-        self.setMinimumSize(500, 400)
+        self.setMinimumSize(600, 400)
 
         main_layout = QHBoxLayout(self)
 
@@ -57,17 +57,22 @@ class S3ConfigDialog(QDialog):
         self._profile_list.currentRowChanged.connect(self._on_profile_selected)
         left.addWidget(self._profile_list, 1)
 
-        list_btns = QHBoxLayout()
-        add_btn = QPushButton("Добавить")
+        list_btns_top = QHBoxLayout()
+        add_btn = QPushButton("+")
+        add_btn.setToolTip("Добавить профиль")
+        add_btn.setFixedWidth(32)
         add_btn.clicked.connect(self._on_add_profile)
+        self._del_btn = QPushButton("−")
+        self._del_btn.setToolTip("Удалить профиль")
+        self._del_btn.setFixedWidth(32)
+        self._del_btn.clicked.connect(self._on_delete_profile)
         self._rename_btn = QPushButton("Переименовать")
         self._rename_btn.clicked.connect(self._on_rename_profile)
-        self._del_btn = QPushButton("Удалить")
-        self._del_btn.clicked.connect(self._on_delete_profile)
-        list_btns.addWidget(add_btn)
-        list_btns.addWidget(self._rename_btn)
-        list_btns.addWidget(self._del_btn)
-        left.addLayout(list_btns)
+        list_btns_top.addWidget(add_btn)
+        list_btns_top.addWidget(self._del_btn)
+        list_btns_top.addStretch()
+        left.addLayout(list_btns_top)
+        left.addWidget(self._rename_btn)
 
         left_widget = QWidget()
         left_widget.setLayout(left)
