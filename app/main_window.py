@@ -373,13 +373,10 @@ class MainWindow(QMainWindow):
         name = self._file_name.get_name() or self._parsed.save_name or "output"
         is_local = self._dest_panel.is_local()
 
-        if is_local:
-            save_dir = self._dest_panel.get_local_path()
-            if not save_dir:
-                QMessageBox.warning(self, "Ошибка", "Выберите локальную папку.")
-                return None
-        else:
-            save_dir = tempfile.mkdtemp(prefix="dlhelper_")
+        save_dir = self._dest_panel.get_local_path()
+        if not save_dir:
+            QMessageBox.warning(self, "Ошибка", "Выберите локальную папку.")
+            return None
 
         dest_type = "local" if is_local else "s3"
         dest_path = save_dir if is_local else self._dest_panel.get_s3_path()
@@ -568,16 +565,7 @@ class MainWindow(QMainWindow):
         if not save_dir or not os.path.isdir(save_dir):
             return
 
-        # Для S3 задач save_dir — временная папка, удаляем целиком
-        if item.dest_type == "s3" and save_dir.startswith(tempfile.gettempdir()):
-            try:
-                shutil.rmtree(save_dir, ignore_errors=True)
-                self._log_panel.append_text(f"Удалена временная папка: {save_dir}\n")
-            except Exception:
-                pass
-            return
-
-        # Для локальных — удаляем файлы, содержащие имя задачи
+        # Удаляем файлы, содержащие имя задачи
         name_hint = item.name
         for f in os.listdir(save_dir):
             if name_hint and name_hint in f:
