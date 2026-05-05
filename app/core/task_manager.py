@@ -69,6 +69,14 @@ class TaskManager:
         )
         self._conn.commit()
 
+    def save_log(self, task_id: int, full_text: str):
+        """Перезаписывает лог задачи полным текстом."""
+        self._conn.execute(
+            "UPDATE tasks SET log_text = ? WHERE id = ?",
+            (full_text, task_id),
+        )
+        self._conn.commit()
+
     def get_log(self, task_id: int) -> str:
         row = self._conn.execute(
             "SELECT log_text FROM tasks WHERE id = ?", (task_id,)

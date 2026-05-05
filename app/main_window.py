@@ -544,6 +544,8 @@ class MainWindow(QMainWindow):
             self._cleanup_files(item)
             if item.task_id:
                 self._task_mgr.update_status(item.task_id, "Failed")
+                self._log_panel.append_text("\n--- Отменено ---\n")
+                self._save_task_log(item.task_id)
 
         # Очистить очередь
         self._queue.clear()
@@ -555,7 +557,8 @@ class MainWindow(QMainWindow):
         self._stop_btn.setEnabled(False)
         self._progress.set_finished(False)
         self._progress.set_status("Отменено")
-        self._log_panel.append_text("\n--- Отменено ---\n")
+        if not item or not item.task_id:
+            self._log_panel.append_text("\n--- Отменено ---\n")
 
         self._cancelling = False
 
@@ -577,11 +580,14 @@ class MainWindow(QMainWindow):
                     except Exception:
                         pass
 
+    def _save_task_log(self, task_id: int):
+        """Сохраняет полный лог из панели в базу данных."""
+        full_log = self._log_panel.toPlainText()
+        self._task_mgr.save_log(task_id, full_log)
+
     def _on_download_log(self, text: str):
         """Обычная строка лога (с переводом строки)."""
         self._log_panel.append_text(text)
-        if self._current_item and self._current_item.task_id:
-            self._task_mgr.append_log(self._current_item.task_id, text)
 
     def _on_download_progress(self, text: str):
         """Строка прогресса — запоминаем по потокам, показываем лучший."""
@@ -653,9 +659,10 @@ class MainWindow(QMainWindow):
             )
             if item.task_id:
                 self._task_mgr.update_status(item.task_id, "Failed")
+                self._save_task_log(item.task_id)
             self._current_item = None
             self._download_btn.setEnabled(True)
-    
+
             self._process_next_in_queue()
             return
 
@@ -667,9 +674,10 @@ class MainWindow(QMainWindow):
             self._progress.set_finished(True)
             if item.task_id:
                 self._task_mgr.update_status(item.task_id, "Done")
+                self._save_task_log(item.task_id)
             self._current_item = None
             self._download_btn.setEnabled(True)
-    
+
             self._process_next_in_queue()
 
     # ── S3 загрузка ──────────────────────────────────────────────
@@ -741,13 +749,12 @@ class MainWindow(QMainWindow):
 
     def _on_upload_log(self, text: str):
         self._log_panel.append_text(text)
-        if self._current_item and self._current_item.task_id:
-            self._task_mgr.append_log(self._current_item.task_id, text)
 
     def _on_upload_finished(self, success: bool, message: str):
         item = self._current_item
         if item and item.task_id:
             self._task_mgr.update_status(item.task_id, "Done" if success else "Failed")
+            self._save_task_log(item.task_id)
         if not success and item:
             self._notifier.notify(
                 "Ошибка S3", f"{item.name} — {message}", success=False
