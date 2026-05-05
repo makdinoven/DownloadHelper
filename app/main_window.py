@@ -379,6 +379,24 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Выберите локальную папку.")
             return None
 
+        # Предупреждение о облачных папках (OneDrive, Dropbox и т.д.)
+        cloud_markers = ["OneDrive", "Dropbox", "Google Drive", "iCloudDrive"]
+        for marker in cloud_markers:
+            if marker.lower() in save_dir.lower():
+                reply = QMessageBox.warning(
+                    self, "Внимание",
+                    f"Папка находится в {marker}.\n\n"
+                    "Облачные хранилища могут блокировать файлы во время "
+                    "синхронизации, что приводит к ошибкам N_m3u8DL-RE.\n\n"
+                    "Рекомендуется использовать локальную папку, "
+                    "например C:\\Downloads\n\n"
+                    "Продолжить?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return None
+                break
+
         dest_type = "local" if is_local else "s3"
         dest_path = save_dir if is_local else self._dest_panel.get_s3_path()
         delete_local = (not is_local) and self._dest_panel.should_delete_local()
