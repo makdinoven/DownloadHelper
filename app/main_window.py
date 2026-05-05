@@ -64,8 +64,9 @@ class MainWindow(QMainWindow):
         self._progress_timer = QTimer(self)
         self._progress_timer.setInterval(200)
         self._progress_timer.timeout.connect(self._flush_progress)
-        self._stream_lines: dict[str, str] = {}  # {"vid": "...", "sub": "..."}
+        self._stream_lines: dict[str, str] = {}
         self._stream_pri = {"vid": 3, "aud": 2, "sub": 1}
+        self._full_log: list[str] = []  # полный лог для сохранения в БД
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -472,10 +473,10 @@ class MainWindow(QMainWindow):
 
         # Проверка утилит
         statuses = check_all_tools()
-        self._log_panel.append_text(format_tool_check_log(statuses))
+        self._log(format_tool_check_log(statuses))
         missing = [s.name for s in statuses if not s.found]
         if missing:
-            self._log_panel.append_text(
+            self._log(
                 f"Загрузка невозможна. Отсутствуют: {', '.join(missing)}\n"
             )
             self._download_btn.setEnabled(True)
@@ -484,9 +485,7 @@ class MainWindow(QMainWindow):
 
         # Проверка свободного места
         if not self._check_disk_space(item.save_dir):
-            self._log_panel.append_text(
-                f"Недостаточно места на диске для {item.name}. Пропуск.\n"
-            )
+            self._log(f"Недостаточно места на диске для {item.name}. Пропуск.\n")
             self._process_next_in_queue()
             return
 
@@ -518,10 +517,11 @@ class MainWindow(QMainWindow):
             self._config.set_active_s3_profile(item.s3_profile)
 
         self._log_panel.clear()
+        self._full_log.clear()
         self._progress.reset()
         self._stream_lines.clear()
         self._progress.set_status("Загрузка...")
-        self._log_panel.append_text(f"Запуск: {' '.join(args)}\n\n")
+        self._log(f"Запуск: {' '.join(args)}\n\n")
         self._download_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
         self._downloader.start(args)
@@ -544,7 +544,7 @@ class MainWindow(QMainWindow):
             self._cleanup_files(item)
             if item.task_id:
                 self._task_mgr.update_status(item.task_id, "Failed")
-                self._log_panel.append_text("\n--- Отменено ---\n")
+                self._log("\n--- Отменено ---\n")
                 self._save_task_log(item.task_id)
 
         # Очистить очередь
@@ -558,7 +558,7 @@ class MainWindow(QMainWindow):
         self._progress.set_finished(False)
         self._progress.set_status("Отменено")
         if not item or not item.task_id:
-            self._log_panel.append_text("\n--- Отменено ---\n")
+            self._log("\n--- Отменено ---\n")
 
         self._cancelling = False
 
@@ -576,21 +576,27 @@ class MainWindow(QMainWindow):
                 if os.path.isfile(full):
                     try:
                         os.remove(full)
-                        self._log_panel.append_text(f"Удалён: {full}\n")
+                        self._log(f"Удалён: {full}\n")
                     except Exception:
                         pass
 
+    def _log(self, text: str):
+        """Пишет в лог-панель и в полный лог для сохранения в БД."""
+        self._log_panel.append_text(text)
+        self._full_log.append(text)
+
     def _save_task_log(self, task_id: int):
-        """Сохраняет полный лог из панели в базу данных."""
-        full_log = self._log_panel.toPlainText()
-        self._task_mgr.save_log(task_id, full_log)
+        """Сохраняет полный лог в базу данных."""
+        self._task_mgr.save_log(task_id, "".join(self._full_log))
 
     def _on_download_log(self, text: str):
         """Обычная строка лога (с переводом строки)."""
         self._log_panel.append_text(text)
+        self._full_log.append(text)
 
     def _on_download_progress(self, text: str):
         """Строка прогресса — запоминаем по потокам, показываем лучший."""
+        self._full_log.append(text + "\n")
         self._progress.parse_output(text)
 
         # Определяем поток
@@ -638,21 +644,16 @@ class MainWindow(QMainWindow):
             # Попытка повторить
             if item.retries_left > 0:
                 item.retries_left -= 1
-                self._log_panel.append_text(
+                self._log(
                     f"\n--- Ошибка (код {exit_code}). "
                     f"Повтор ({item.retries_left} осталось)... ---\n"
                 )
-                if item.task_id:
-                    self._task_mgr.append_log(
-                        item.task_id,
-                        f"\n--- Повторная попытка (осталось {item.retries_left}) ---\n"
-                    )
                 self._queue.insert(0, item)
                 self._current_item = None
                 self._process_next_in_queue()
                 return
 
-            self._log_panel.append_text(f"\n--- Ошибка (код {exit_code}) ---\n")
+            self._log(f"\n--- Ошибка (код {exit_code}) ---\n")
             self._progress.set_finished(False)
             self._notifier.notify(
                 "Ошибка загрузки", f"{item.name} — код {exit_code}", success=False
@@ -666,7 +667,7 @@ class MainWindow(QMainWindow):
             self._process_next_in_queue()
             return
 
-        self._log_panel.append_text("\n--- Загрузка завершена ---\n")
+        self._log("\n--- Загрузка завершена ---\n")
 
         if item.dest_type == "s3":
             self._start_s3_upload(item)
@@ -688,11 +689,11 @@ class MainWindow(QMainWindow):
         self._progress.reset()
         self._progress.set_status("Загрузка в S3...")
         self._stop_btn.setEnabled(True)
-        self._log_panel.append_text("\nНачинается загрузка в S3...\n")
+        self._log("\nНачинается загрузка в S3...\n")
 
         local_file = self._find_downloaded_file(item.save_dir, item.name)
         if not local_file:
-            self._log_panel.append_text("Ошибка: не удалось найти скачанный файл.\n")
+            self._log("Ошибка: не удалось найти скачанный файл.\n")
             self._progress.set_finished(False)
             if item.task_id:
                 self._task_mgr.update_status(item.task_id, "Failed")
@@ -704,9 +705,7 @@ class MainWindow(QMainWindow):
 
         s3_config = self._config.get_s3_config(item.s3_profile)
         if not s3_config:
-            self._log_panel.append_text(
-                f"Ошибка: S3 профиль «{item.s3_profile}» не найден.\n"
-            )
+            self._log(f"Ошибка: S3 профиль «{item.s3_profile}» не найден.\n")
             self._progress.set_finished(False)
             if item.task_id:
                 self._task_mgr.update_status(item.task_id, "Failed")
@@ -720,7 +719,7 @@ class MainWindow(QMainWindow):
         if s3_path.endswith("/"):
             s3_path += os.path.basename(local_file)
 
-        self._log_panel.append_text(f"S3 профиль: {item.s3_profile}\n")
+        self._log(f"S3 профиль: {item.s3_profile}\n")
 
         self._uploader = S3Uploader(
             local_file, s3_path, s3_config,
@@ -749,7 +748,7 @@ class MainWindow(QMainWindow):
         return max(files, key=os.path.getsize)
 
     def _on_upload_log(self, text: str):
-        self._log_panel.append_text(text)
+        self._log(text)
 
     def _on_upload_finished(self, success: bool, message: str):
         item = self._current_item
