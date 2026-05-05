@@ -18,6 +18,7 @@ from app.core.config import ConfigManager
 from app.core.task_manager import TaskManager, Task
 from app.core.downloader import Downloader, find_executable, check_all_tools, format_tool_check_log
 from app.core.s3_uploader import S3Uploader
+from app.core.notifier import Notifier
 from app.widgets.command_input import CommandInput
 from app.widgets.file_name_edit import FileNameEdit
 from app.widgets.destination_panel import DestinationPanel
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
         self._config = ConfigManager()
         self._task_mgr = TaskManager()
         self._downloader = Downloader(self)
+        self._notifier = Notifier()
         self._uploader: S3Uploader | None = None
         self._current_item: QueueItem | None = None
         self._queue: list[QueueItem] = []
@@ -375,6 +377,7 @@ class MainWindow(QMainWindow):
         if not self._queue:
             self._update_queue_label()
             self._log_panel.append_text("\n--- Очередь завершена ---\n")
+            self._notifier.notify("Download Helper", "Очередь загрузок завершена")
             return
 
         item = self._queue.pop(0)
@@ -515,6 +518,9 @@ class MainWindow(QMainWindow):
 
             self._log_panel.append_text(f"\n--- Ошибка (код {exit_code}) ---\n")
             self._progress.set_finished(False)
+            self._notifier.notify(
+                "Ошибка загрузки", f"{item.name} — код {exit_code}", success=False
+            )
             if item.task_id:
                 self._task_mgr.update_status(item.task_id, "Failed")
             self._current_item = None
@@ -611,6 +617,10 @@ class MainWindow(QMainWindow):
         item = self._current_item
         if item and item.task_id:
             self._task_mgr.update_status(item.task_id, "Done" if success else "Failed")
+        if not success and item:
+            self._notifier.notify(
+                "Ошибка S3", f"{item.name} — {message}", success=False
+            )
         self._progress.set_finished(success)
         self._current_item = None
         self._uploader = None
@@ -688,3 +698,7 @@ class MainWindow(QMainWindow):
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
+
+    def closeEvent(self, event):
+        self._notifier.cleanup()
+        super().closeEvent(event)
