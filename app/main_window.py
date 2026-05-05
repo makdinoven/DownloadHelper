@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QMessageBox, QSpinBox, QFileDialog, QListWidget,
-    QListWidgetItem,
+    QListWidgetItem, QCheckBox, QApplication,
 )
 from PyQt6.QtCore import QSize, Qt, QTimer
 
@@ -70,8 +70,15 @@ class MainWindow(QMainWindow):
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(6, 6, 6, 6)
 
-        # Верхняя строка с кнопкой справки
+        # Верхняя строка с авто-режимом и кнопкой справки
         top_row = QHBoxLayout()
+        self._auto_cb = QCheckBox("Авто-режим (мониторинг буфера обмена)")
+        self._auto_cb.setToolTip(
+            "Автоматически подхватывать команду N_m3u8DL-RE\n"
+            "при копировании и запускать загрузку"
+        )
+        self._auto_cb.toggled.connect(self._on_auto_toggle)
+        top_row.addWidget(self._auto_cb)
         top_row.addStretch()
         help_btn = QPushButton("?")
         help_btn.setFixedSize(28, 28)
@@ -82,6 +89,10 @@ class MainWindow(QMainWindow):
         help_btn.clicked.connect(self._on_help)
         top_row.addWidget(help_btn)
         central_layout.addLayout(top_row)
+
+        # Мониторинг буфера обмена
+        self._clipboard = QApplication.clipboard()
+        self._ignore_clipboard = False  # флаг для игнорирования собственных операций
 
         self._tabs = QTabWidget()
         central_layout.addWidget(self._tabs, 1)
@@ -267,6 +278,43 @@ class MainWindow(QMainWindow):
     def _on_help(self):
         dlg = HelpDialog(self)
         dlg.exec()
+
+    # ── Авто-режим (мониторинг буфера обмена) ─────────────────────
+
+    def _on_auto_toggle(self, checked: bool):
+        if checked:
+            self._clipboard.dataChanged.connect(self._on_clipboard_changed)
+            self._log_panel.append_text("Авто-режим включён. Ожидание команды...\n")
+        else:
+            try:
+                self._clipboard.dataChanged.disconnect(self._on_clipboard_changed)
+            except TypeError:
+                pass
+            self._log_panel.append_text("Авто-режим выключен.\n")
+
+    def _on_clipboard_changed(self):
+        if self._ignore_clipboard:
+            return
+        text = self._clipboard.text().strip()
+        if not text:
+            return
+        # Проверяем, что это команда N_m3u8DL-RE
+        if "N_m3u8DL-RE" not in text and "n_m3u8dl-re" not in text.lower():
+            return
+
+        self._log_panel.append_text(f"Авто-режим: обнаружена команда\n")
+        self._cmd_input.set_text(text)
+        self._on_parse()
+
+        if not self._parsed:
+            self._log_panel.append_text("Авто-режим: не удалось распарсить команду\n")
+            return
+
+        # Если идёт загрузка — добавляем в очередь, иначе сразу качаем
+        if self._downloader.is_running():
+            self._on_add_to_queue()
+        else:
+            self._on_download()
 
     # ── Создание элемента очереди ────────────────────────────────
 
@@ -685,8 +733,9 @@ class MainWindow(QMainWindow):
         text = panel.toPlainText()
         if not text.strip():
             return
-        from PyQt6.QtWidgets import QApplication
+        self._ignore_clipboard = True
         QApplication.clipboard().setText(text)
+        QTimer.singleShot(100, lambda: setattr(self, '_ignore_clipboard', False))
 
     def _save_log(self, panel: LogPanel):
         text = panel.toPlainText()
