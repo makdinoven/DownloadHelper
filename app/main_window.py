@@ -398,7 +398,18 @@ class MainWindow(QMainWindow):
                 break
 
         dest_type = "local" if is_local else "s3"
-        dest_path = save_dir if is_local else self._dest_panel.get_s3_path()
+        if is_local:
+            dest_path = save_dir
+        else:
+            s3_raw = self._dest_panel.get_s3_path()
+            # Автоматически добавляем имя файла, если путь — директория
+            # (не содержит расширения файла в последнем сегменте)
+            last_segment = s3_raw.rstrip("/").rsplit("/", 1)[-1] if s3_raw else ""
+            if not last_segment or "." not in last_segment:
+                file_with_ext = name if "." in name else name + ".mp4"
+                dest_path = s3_raw.rstrip("/") + "/" + file_with_ext
+            else:
+                dest_path = s3_raw
         delete_local = (not is_local) and self._dest_panel.should_delete_local()
         s3_profile = "" if is_local else self._dest_panel.get_selected_s3_profile()
 
@@ -734,8 +745,6 @@ class MainWindow(QMainWindow):
             return
 
         s3_path = item.dest_path or f"/{item.name}"
-        if s3_path.endswith("/"):
-            s3_path += os.path.basename(local_file)
 
         self._log(f"S3 профиль: {item.s3_profile}\n")
 
