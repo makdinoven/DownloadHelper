@@ -728,6 +728,7 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self._uploader.progress.connect(self._progress.set_progress)
+        self._uploader.progress_info.connect(self._progress.set_info)
         self._uploader.log_message.connect(self._on_upload_log)
         self._uploader.upload_finished.connect(self._on_upload_finished)
         self._uploader.start()

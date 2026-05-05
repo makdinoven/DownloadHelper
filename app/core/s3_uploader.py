@@ -1,12 +1,14 @@
 """QThread обёртка для загрузки файлов в S3 через boto3."""
 
 import os
+import time
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
 
 class S3Uploader(QThread):
     progress = pyqtSignal(int)  # процент 0-100
+    progress_info = pyqtSignal(str)  # "Скорость: X MiB/s  |  Осталось: MM:SS"
     upload_finished = pyqtSignal(bool, str)  # успех, сообщение
     log_message = pyqtSignal(str)
 
@@ -17,6 +19,16 @@ class S3Uploader(QThread):
         self._s3_key = s3_key.lstrip("/")
         self._s3_config = s3_config
         self._delete_local = delete_local
+
+    @staticmethod
+    def _format_size(b: float) -> str:
+        if b >= 1024 * 1024 * 1024:
+            return f"{b / 1024 / 1024 / 1024:.1f} GiB"
+        if b >= 1024 * 1024:
+            return f"{b / 1024 / 1024:.1f} MiB"
+        if b >= 1024:
+            return f"{b / 1024:.1f} KiB"
+        return f"{b:.0f} B"
 
     def run(self):
         try:
@@ -41,16 +53,36 @@ class S3Uploader(QThread):
 
             self.log_message.emit(
                 f"Загрузка {self._local_path} -> s3://{bucket}/{self._s3_key} "
-                f"({file_size / 1024 / 1024:.1f} МБ)\n"
+                f"({self._format_size(file_size)})\n"
             )
 
             uploaded = 0
+            start_time = time.monotonic()
+            last_info_time = 0.0
 
             def callback(bytes_transferred):
-                nonlocal uploaded
+                nonlocal uploaded, last_info_time
                 uploaded += bytes_transferred
                 pct = int(uploaded * 100 / file_size) if file_size > 0 else 100
                 self.progress.emit(min(pct, 100))
+
+                now = time.monotonic()
+                if now - last_info_time < 0.5:
+                    return
+                last_info_time = now
+
+                elapsed = now - start_time
+                if elapsed > 0 and uploaded > 0:
+                    speed = uploaded / elapsed
+                    remaining = file_size - uploaded
+                    eta_sec = int(remaining / speed) if speed > 0 else 0
+                    eta_str = f"{eta_sec // 60:02d}:{eta_sec % 60:02d}"
+                    info = (
+                        f"Скорость: {self._format_size(speed)}/s  |  "
+                        f"Осталось: {eta_str}  |  "
+                        f"{self._format_size(uploaded)} / {self._format_size(file_size)}"
+                    )
+                    self.progress_info.emit(info)
 
             client.upload_file(
                 self._local_path,
