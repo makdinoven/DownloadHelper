@@ -72,13 +72,23 @@ class MainWindow(QMainWindow):
 
         # Верхняя строка с авто-режимом и кнопкой справки
         top_row = QHBoxLayout()
-        self._auto_cb = QCheckBox("Авто-режим (мониторинг буфера обмена)")
-        self._auto_cb.setToolTip(
-            "Автоматически подхватывать команду N_m3u8DL-RE\n"
-            "при копировании и запускать загрузку"
-        )
+        self._auto_cb = QCheckBox("Авто-режим")
         self._auto_cb.toggled.connect(self._on_auto_toggle)
         top_row.addWidget(self._auto_cb)
+
+        self._auto_normalize_cb = QCheckBox("Авто-нормализация имени")
+        self._auto_normalize_cb.setChecked(True)
+        self._auto_normalize_cb.setEnabled(False)
+        top_row.addWidget(self._auto_normalize_cb)
+
+        auto_help_btn = QPushButton("?")
+        auto_help_btn.setFixedSize(22, 22)
+        auto_help_btn.setStyleSheet(
+            "QPushButton { font-weight: bold; font-size: 11px; border-radius: 11px; }"
+        )
+        auto_help_btn.clicked.connect(self._on_auto_help)
+        top_row.addWidget(auto_help_btn)
+
         top_row.addStretch()
         help_btn = QPushButton("?")
         help_btn.setFixedSize(28, 28)
@@ -92,7 +102,7 @@ class MainWindow(QMainWindow):
 
         # Мониторинг буфера обмена
         self._clipboard = QApplication.clipboard()
-        self._ignore_clipboard = False  # флаг для игнорирования собственных операций
+        self._ignore_clipboard = False
 
         self._tabs = QTabWidget()
         central_layout.addWidget(self._tabs, 1)
@@ -282,9 +292,13 @@ class MainWindow(QMainWindow):
     # ── Авто-режим (мониторинг буфера обмена) ─────────────────────
 
     def _on_auto_toggle(self, checked: bool):
+        self._auto_normalize_cb.setEnabled(checked)
         if checked:
             self._clipboard.dataChanged.connect(self._on_clipboard_changed)
-            self._log_panel.append_text("Авто-режим включён. Ожидание команды...\n")
+            dest = "S3" if not self._dest_panel.is_local() else "Локально"
+            self._log_panel.append_text(
+                f"Авто-режим включён. Назначение: {dest}. Ожидание команды...\n"
+            )
         else:
             try:
                 self._clipboard.dataChanged.disconnect(self._on_clipboard_changed)
@@ -292,23 +306,47 @@ class MainWindow(QMainWindow):
                 pass
             self._log_panel.append_text("Авто-режим выключен.\n")
 
+    def _on_auto_help(self):
+        QMessageBox.information(self, "Авто-режим", (
+            "<b>Как работает авто-режим:</b><br><br>"
+            "1. Включите галочку «Авто-режим»<br>"
+            "2. Настройте место сохранения (Локально или S3) и путь<br>"
+            "3. Скопируйте команду N_m3u8DL-RE (Ctrl+C) откуда угодно<br>"
+            "4. Приложение автоматически:<br>"
+            "&nbsp;&nbsp;&nbsp;— Вставит и распарсит команду<br>"
+            "&nbsp;&nbsp;&nbsp;— Нормализует имя файла (если включено)<br>"
+            "&nbsp;&nbsp;&nbsp;— Начнёт загрузку или добавит в очередь<br><br>"
+            "<b>Авто-нормализация имени:</b> транслитерирует кириллицу, "
+            "заменяет пробелы на «_», убирает спецсимволы.<br><br>"
+            "<b>Место сохранения:</b> используются текущие настройки "
+            "(Локально/S3, путь, профиль). Измените их до включения "
+            "авто-режима или в любой момент во время работы."
+        ))
+
     def _on_clipboard_changed(self):
         if self._ignore_clipboard:
             return
         text = self._clipboard.text().strip()
         if not text:
             return
-        # Проверяем, что это команда N_m3u8DL-RE
         if "N_m3u8DL-RE" not in text and "n_m3u8dl-re" not in text.lower():
             return
 
-        self._log_panel.append_text(f"Авто-режим: обнаружена команда\n")
+        self._tabs.setCurrentIndex(0)
         self._cmd_input.set_text(text)
         self._on_parse()
 
         if not self._parsed:
             self._log_panel.append_text("Авто-режим: не удалось распарсить команду\n")
             return
+
+        # Авто-нормализация
+        if self._auto_normalize_cb.isChecked():
+            self._on_normalize()
+
+        name = self._file_name.get_name() or "output"
+        dest = "S3" if not self._dest_panel.is_local() else "Локально"
+        self._log_panel.append_text(f"Авто-режим: {name} → {dest}\n")
 
         # Если идёт загрузка — добавляем в очередь, иначе сразу качаем
         if self._downloader.is_running():
