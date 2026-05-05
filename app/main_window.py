@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self._downloader = Downloader(self)
         self._notifier = Notifier()
         self._uploader: S3Uploader | None = None
+        self._cancelling = False
         self._current_item: QueueItem | None = None
         self._queue: list[QueueItem] = []
         self._parsed: ParsedCommand | None = None
@@ -162,7 +163,7 @@ class MainWindow(QMainWindow):
 
         self._add_queue_btn = QPushButton("Добавить в очередь")
         self._download_btn = QPushButton("Скачать")
-        self._stop_btn = QPushButton("Остановить")
+        self._stop_btn = QPushButton("Отменить")
         self._stop_btn.setEnabled(False)
         ctrl_row.addWidget(self._add_queue_btn)
         ctrl_row.addWidget(self._download_btn)
@@ -529,17 +530,64 @@ class MainWindow(QMainWindow):
         self._downloader.start(args)
 
     def _on_stop(self):
-        self._downloader.stop()
-        if self._current_item and self._current_item.task_id:
-            self._task_mgr.update_status(self._current_item.task_id, "Failed")
-        self._current_item = None
-        self._queue.clear()
-        self._update_queue_label()
-        self._download_btn.setEnabled(True)
+        self._cancelling = True
 
+        # Остановить загрузку
+        self._downloader.stop()
+
+        # Остановить S3 upload
+        if self._uploader and self._uploader.isRunning():
+            self._uploader.terminate()
+            self._uploader.wait(3000)
+            self._uploader = None
+
+        # Очистить частично скачанные файлы текущей задачи
+        item = self._current_item
+        if item:
+            self._cleanup_files(item)
+            if item.task_id:
+                self._task_mgr.update_status(item.task_id, "Failed")
+
+        # Очистить очередь
+        self._queue.clear()
+        self._current_item = None
+        self._update_queue_label()
+
+        self._progress_timer.stop()
+        self._download_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
-        self._progress.set_status("Остановлено")
-        self._log_panel.append_text("\n--- Остановлено ---\n")
+        self._progress.set_finished(False)
+        self._progress.set_status("Отменено")
+        self._log_panel.append_text("\n--- Отменено ---\n")
+
+        self._cancelling = False
+
+    def _cleanup_files(self, item: QueueItem):
+        """Удаляет частично скачанные файлы задачи."""
+        save_dir = item.save_dir
+        if not save_dir or not os.path.isdir(save_dir):
+            return
+
+        # Для S3 задач save_dir — временная папка, удаляем целиком
+        if item.dest_type == "s3" and save_dir.startswith(tempfile.gettempdir()):
+            try:
+                shutil.rmtree(save_dir, ignore_errors=True)
+                self._log_panel.append_text(f"Удалена временная папка: {save_dir}\n")
+            except Exception:
+                pass
+            return
+
+        # Для локальных — удаляем файлы, содержащие имя задачи
+        name_hint = item.name
+        for f in os.listdir(save_dir):
+            if name_hint and name_hint in f:
+                full = os.path.join(save_dir, f)
+                if os.path.isfile(full):
+                    try:
+                        os.remove(full)
+                        self._log_panel.append_text(f"Удалён: {full}\n")
+                    except Exception:
+                        pass
 
     def _on_download_log(self, text: str):
         """Обычная строка лога (с переводом строки)."""
@@ -579,6 +627,11 @@ class MainWindow(QMainWindow):
     def _on_download_finished(self, exit_code: int):
         self._progress_timer.stop()
         self._flush_progress()
+
+        # Если отмена — _on_stop уже всё обработал
+        if getattr(self, '_cancelling', False):
+            return
+
         self._stop_btn.setEnabled(False)
 
         item = self._current_item
@@ -638,6 +691,7 @@ class MainWindow(QMainWindow):
             self._task_mgr.update_status(item.task_id, "Uploading")
         self._progress.reset()
         self._progress.set_status("Загрузка в S3...")
+        self._stop_btn.setEnabled(True)
         self._log_panel.append_text("\nНачинается загрузка в S3...\n")
 
         local_file = self._find_downloaded_file(item.save_dir, item.name)
