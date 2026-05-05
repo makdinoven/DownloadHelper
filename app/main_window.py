@@ -338,6 +338,7 @@ class MainWindow(QMainWindow):
 
         if not self._parsed:
             self._log_panel.append_text("Авто-режим: не удалось распарсить команду\n")
+            self._notifier.notify("Авто-режим", "Не удалось распарсить команду", success=False)
             return
 
         # Авто-нормализация
@@ -351,8 +352,10 @@ class MainWindow(QMainWindow):
         # Если идёт загрузка — добавляем в очередь, иначе сразу качаем
         if self._downloader.is_running():
             self._on_add_to_queue()
+            self._notifier.notify("В очередь", f"{name} → {dest}")
         else:
             self._on_download()
+            self._notifier.notify("Загрузка", f"{name} → {dest}")
 
     # ── Создание элемента очереди ────────────────────────────────
 
