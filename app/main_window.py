@@ -42,6 +42,15 @@ class QueueItem:
     s3_profile: str = ""
     task_id: int | None = None
     retries_left: int = 0
+    local_file: str = ""    # путь к скачанному файлу (для повтора S3)
+    s3_retry_only: bool = False  # только повтор S3 (без скачивания)
+
+
+@dataclass
+class S3Failure:
+    """Информация о неудачной загрузке в S3."""
+    item: QueueItem
+    error: str
 
 
 class MainWindow(QMainWindow):
@@ -58,6 +67,7 @@ class MainWindow(QMainWindow):
         self._cancelling = False
         self._current_item: QueueItem | None = None
         self._queue: list[QueueItem] = []
+        self._s3_failures: list[S3Failure] = []
         self._parsed: ParsedCommand | None = None
 
         # Троттлинг обновлений прогресса (не чаще чем раз в 200 мс)
@@ -201,6 +211,42 @@ class MainWindow(QMainWindow):
         self._add_queue_btn.clicked.connect(self._on_add_to_queue)
         self._download_btn.clicked.connect(self._on_download)
         self._stop_btn.clicked.connect(self._on_stop)
+
+        # Панель ошибок S3
+        s3_fail_header = QHBoxLayout()
+        self._s3_fail_toggle = QPushButton("▶ Ошибки S3 (0)")
+        self._s3_fail_toggle.setStyleSheet(
+            "QPushButton { border: none; color: #cc3333; font-size: 12px; "
+            "text-align: left; font-weight: bold; }"
+        )
+        self._s3_fail_toggle.setCheckable(True)
+        self._s3_fail_toggle.clicked.connect(self._on_toggle_s3_failures)
+        self._s3_fail_toggle.setVisible(False)
+        s3_fail_header.addWidget(self._s3_fail_toggle)
+        s3_fail_header.addStretch()
+        self._s3_retry_btn = QPushButton("Повторить все")
+        self._s3_retry_btn.setVisible(False)
+        self._s3_retry_btn.clicked.connect(self._on_retry_s3_all)
+        s3_fail_header.addWidget(self._s3_retry_btn)
+        self._s3_retry_selected_btn = QPushButton("Повторить выбранные")
+        self._s3_retry_selected_btn.setVisible(False)
+        self._s3_retry_selected_btn.clicked.connect(self._on_retry_s3_selected)
+        s3_fail_header.addWidget(self._s3_retry_selected_btn)
+        self._s3_fail_clear_btn = QPushButton("Очистить")
+        self._s3_fail_clear_btn.setVisible(False)
+        self._s3_fail_clear_btn.clicked.connect(self._on_clear_s3_failures)
+        s3_fail_header.addWidget(self._s3_fail_clear_btn)
+        layout.addLayout(s3_fail_header)
+
+        self._s3_fail_list = QListWidget()
+        self._s3_fail_list.setMaximumHeight(120)
+        self._s3_fail_list.setVisible(False)
+        self._s3_fail_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self._s3_fail_list.setStyleSheet(
+            "QListWidget { border: 1px solid #cc3333; }"
+            "QListWidget::item { color: #cc3333; }"
+        )
+        layout.addWidget(self._s3_fail_list)
 
         # Прогресс-бар
         self._progress = ProgressPanel()
@@ -467,6 +513,82 @@ class MainWindow(QMainWindow):
         self._log_panel.append_text("Очередь очищена.\n")
         self._update_queue_label()
 
+    # ── Панель ошибок S3 ──────────────────────────────────────────
+
+    def _update_s3_failures_ui(self):
+        n = len(self._s3_failures)
+        self._s3_fail_toggle.setText(
+            f"{'▼' if self._s3_fail_toggle.isChecked() else '▶'} Ошибки S3 ({n})"
+        )
+        self._s3_fail_toggle.setVisible(n > 0)
+        if n == 0:
+            self._s3_fail_list.setVisible(False)
+            self._s3_retry_btn.setVisible(False)
+            self._s3_retry_selected_btn.setVisible(False)
+            self._s3_fail_clear_btn.setVisible(False)
+        self._s3_fail_list.clear()
+        for i, failure in enumerate(self._s3_failures):
+            self._s3_fail_list.addItem(
+                f"{i + 1}. {failure.item.name}  —  {failure.error}"
+            )
+
+    def _on_toggle_s3_failures(self, checked: bool):
+        self._s3_fail_list.setVisible(checked)
+        self._s3_retry_btn.setVisible(checked)
+        self._s3_retry_selected_btn.setVisible(checked)
+        self._s3_fail_clear_btn.setVisible(checked)
+        self._update_s3_failures_ui()
+
+    def _on_retry_s3_all(self):
+        if not self._s3_failures:
+            return
+        if self._downloader.is_running() or (self._uploader and self._uploader.isRunning()):
+            QMessageBox.warning(self, "Занято", "Дождитесь завершения текущей операции.")
+            return
+        failures = list(self._s3_failures)
+        self._s3_failures.clear()
+        self._update_s3_failures_ui()
+        for failure in failures:
+            failure.item.s3_retry_only = True
+            self._queue.append(failure.item)
+        self._update_queue_label()
+        self._log_panel.append_text(
+            f"\nПовтор загрузки в S3: {len(failures)} файл(ов)...\n"
+        )
+        self._process_next_s3_retry()
+
+    def _on_retry_s3_selected(self):
+        rows = sorted(
+            {idx.row() for idx in self._s3_fail_list.selectedIndexes()},
+            reverse=True,
+        )
+        if not rows:
+            return
+        if self._downloader.is_running() or (self._uploader and self._uploader.isRunning()):
+            QMessageBox.warning(self, "Занято", "Дождитесь завершения текущей операции.")
+            return
+        selected = []
+        for row in rows:
+            if 0 <= row < len(self._s3_failures):
+                selected.append(self._s3_failures.pop(row))
+        self._update_s3_failures_ui()
+        for failure in reversed(selected):
+            failure.item.s3_retry_only = True
+            self._queue.append(failure.item)
+        self._update_queue_label()
+        self._log_panel.append_text(
+            f"\nПовтор загрузки в S3: {len(selected)} файл(ов)...\n"
+        )
+        self._process_next_s3_retry()
+
+    def _process_next_s3_retry(self):
+        """Запускает обработку очереди (для S3 retry элементов)."""
+        self._process_next_in_queue()
+
+    def _on_clear_s3_failures(self):
+        self._s3_failures.clear()
+        self._update_s3_failures_ui()
+
     def _on_add_to_queue(self):
         item = self._make_queue_item()
         if not item:
@@ -493,12 +615,41 @@ class MainWindow(QMainWindow):
     def _process_next_in_queue(self):
         if not self._queue:
             self._update_queue_label()
-            self._log_panel.append_text("\n--- Очередь завершена ---\n")
-            self._notifier.notify("Download Helper", "Очередь загрузок завершена")
+            if self._s3_failures:
+                n = len(self._s3_failures)
+                self._log_panel.append_text(
+                    f"\n--- Очередь завершена. Ошибки S3: {n} ---\n"
+                )
+                for i, f in enumerate(self._s3_failures, 1):
+                    self._log_panel.append_text(
+                        f"  {i}. {f.item.name}: {f.error}\n"
+                    )
+                self._log_panel.append_text(
+                    "Нажмите «Повторить все» в секции «Ошибки S3» для повтора.\n"
+                )
+                # Раскрыть панель ошибок автоматически
+                self._s3_fail_toggle.setChecked(True)
+                self._on_toggle_s3_failures(True)
+                self._notifier.notify(
+                    "Download Helper",
+                    f"Очередь завершена. Ошибки S3: {n}",
+                    success=False,
+                )
+            else:
+                self._log_panel.append_text("\n--- Очередь завершена ---\n")
+                self._notifier.notify("Download Helper", "Очередь загрузок завершена")
             return
 
         item = self._queue.pop(0)
         self._update_queue_label()
+
+        # Повтор только S3 загрузки (файл уже скачан)
+        if item.s3_retry_only:
+            self._current_item = item
+            self._log_panel.clear()
+            self._full_log.clear()
+            self._start_s3_upload(item)
+            return
 
         # Проверка утилит
         statuses = check_all_tools()
@@ -720,17 +871,22 @@ class MainWindow(QMainWindow):
         self._stop_btn.setEnabled(True)
         self._log("\nНачинается загрузка в S3...\n")
 
-        local_file = self._find_downloaded_file(item.save_dir, item.name)
-        if not local_file:
-            self._log("Ошибка: не удалось найти скачанный файл.\n")
+        # Если есть сохранённый путь (повтор S3), используем его
+        local_file = item.local_file or self._find_downloaded_file(item.save_dir, item.name)
+        if not local_file or not os.path.isfile(local_file):
+            err = "не удалось найти скачанный файл"
+            self._log(f"Ошибка: {err}.\n")
             self._progress.set_finished(False)
             if item.task_id:
                 self._task_mgr.update_status(item.task_id, "Failed")
+            self._s3_failures.append(S3Failure(item=item, error=err))
+            self._update_s3_failures_ui()
             self._current_item = None
             self._download_btn.setEnabled(True)
-    
+
             self._process_next_in_queue()
             return
+        item.local_file = local_file
 
         s3_config = self._config.get_s3_config(item.s3_profile)
         if not s3_config:
@@ -783,6 +939,8 @@ class MainWindow(QMainWindow):
             self._task_mgr.update_status(item.task_id, "Done" if success else "Failed")
             self._save_task_log(item.task_id)
         if not success and item:
+            self._s3_failures.append(S3Failure(item=item, error=message))
+            self._update_s3_failures_ui()
             self._notifier.notify(
                 "Ошибка S3", f"{item.name} — {message}", success=False
             )
@@ -790,6 +948,7 @@ class MainWindow(QMainWindow):
         self._current_item = None
         self._uploader = None
         self._download_btn.setEnabled(True)
+        self._stop_btn.setEnabled(False)
 
         self._process_next_in_queue()
 
